@@ -18,38 +18,38 @@ export class Elements {
 
   // --- STATIC VOXEL ASSETS GENERATION ---
 
-  // Build a charming voxel pine tree
+  // Build a charming low-poly spruce tree
   public createVoxelTree(x: number, y: number, z: number): THREE.Group {
     const tree = new THREE.Group();
     tree.position.set(x, y, z);
 
-    // 1. Trunk (brown trunk voxels)
-    const trunkGeom = new THREE.BoxGeometry(0.4, 3.0, 0.4);
+    // 1. Trunk (brown smooth cylinder post)
+    const trunkGeom = new THREE.CylinderGeometry(0.12, 0.18, 3.2, 8);
     const trunkMat = new THREE.MeshLambertMaterial({ color: 0x5c4033 });
     const trunk = new THREE.Mesh(trunkGeom, trunkMat);
-    trunk.position.y = 1.5;
+    trunk.position.y = 1.6;
     trunk.castShadow = true;
     trunk.receiveShadow = true;
     tree.add(trunk);
 
-    // 2. Foliage layers (concentric green pyramids)
-    const foliageMat = new THREE.MeshLambertMaterial({ color: 0x0f521f });
+    // 2. Conical spruce foliage layers (layered green branches)
+    const foliageMat = new THREE.MeshLambertMaterial({ color: 0x14401e });
     
-    // Bottom large layer
-    const fol1 = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.0, 2.0), foliageMat);
-    fol1.position.y = 2.5;
+    // Bottom branch layer
+    const fol1 = new THREE.Mesh(new THREE.ConeGeometry(1.2, 1.4, 8), foliageMat);
+    fol1.position.y = 2.4;
     fol1.castShadow = true;
     tree.add(fol1);
 
-    // Middle layer
-    const fol2 = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.9, 1.4), foliageMat);
-    fol2.position.y = 3.3;
+    // Middle branch layer
+    const fol2 = new THREE.Mesh(new THREE.ConeGeometry(0.9, 1.2, 8), foliageMat);
+    fol2.position.y = 3.2;
     fol2.castShadow = true;
     tree.add(fol2);
 
-    // Top spike layer
-    const fol3 = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.8), foliageMat);
-    fol3.position.y = 4.0;
+    // Top spike branch layer
+    const fol3 = new THREE.Mesh(new THREE.ConeGeometry(0.5, 0.9, 8), foliageMat);
+    fol3.position.y = 3.9;
     fol3.castShadow = true;
     tree.add(fol3);
 
@@ -57,26 +57,27 @@ export class Elements {
     return tree;
   }
 
-  // Build a large voxel boulder
+  // Build an organic stone boulder
   public createVoxelBoulder(x: number, y: number, z: number): THREE.Group {
     const boulder = new THREE.Group();
     boulder.position.set(x, y, z);
 
     const stoneMat = new THREE.MeshLambertMaterial({ color: 0x707070 });
     
-    // Stack multiple slightly overlapping voxel blocks to make a natural boulder shape
+    // Stack multiple slightly overlapping Dodecahedrons for an organic stone shape
     const sizes = [
-      { w: 1.5, h: 1.0, d: 1.5, ox: 0, oy: 0.5, oz: 0 },
-      { w: 1.0, h: 0.8, d: 1.0, ox: 0.3, oy: 1.1, oz: -0.2 },
-      { w: 0.8, h: 0.6, d: 0.8, ox: -0.4, oy: 0.8, oz: 0.3 }
+      { w: 1.1, ox: 0, oy: 0.5, oz: 0 },
+      { w: 0.7, ox: 0.3, oy: 0.9, oz: -0.2 },
+      { w: 0.6, ox: -0.4, oy: 0.7, oz: 0.3 }
     ];
 
     for (const s of sizes) {
-      const box = new THREE.Mesh(new THREE.BoxGeometry(s.w, s.h, s.d), stoneMat);
-      box.position.set(s.ox, s.oy, s.oz);
-      box.castShadow = true;
-      box.receiveShadow = true;
-      boulder.add(box);
+      const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(s.w, 1), stoneMat);
+      rock.position.set(s.ox, s.oy, s.oz);
+      rock.rotation.set(Math.random() * 2, Math.random() * 2, Math.random() * 2);
+      rock.castShadow = true;
+      rock.receiveShadow = true;
+      boulder.add(rock);
     }
 
     this.staticModelsGroup.add(boulder);
@@ -90,7 +91,7 @@ export class Elements {
     flagGroup.name = `cp-${cp.id}`;
 
     // 1. Thin metal post
-    const postGeom = new THREE.CylinderGeometry(0.04, 0.04, 2.0);
+    const postGeom = new THREE.CylinderGeometry(0.03, 0.03, 2.0, 8);
     const postMat = new THREE.MeshLambertMaterial({ color: 0xcccccc });
     const post = new THREE.Mesh(postGeom, postMat);
     post.position.y = 1.0;
@@ -98,15 +99,14 @@ export class Elements {
     flagGroup.add(post);
 
     // 2. The Orange/White diagonal prism flag (size: 0.6m)
-    // Standard orienteering flag is diagonally split. We make it from stacked voxel panels
     const flagBase = new THREE.Group();
     flagBase.position.y = 1.5;
     
-    const orangeMat = new THREE.MeshLambertMaterial({ color: 0xff6600, emissive: 0xff6600, emissiveIntensity: 0.1 });
+    const orangeMat = new THREE.MeshLambertMaterial({ color: 0xff6600, emissive: 0xff6600, emissiveIntensity: 0.2 });
     const whiteMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
 
     // Build the 3-sided voxel flag shape using panels
-    const pSize = 0.5;
+    const pSize = 0.55;
     
     // Create 3 sides of prism
     for (let i = 0; i < 3; i++) {
@@ -132,13 +132,12 @@ export class Elements {
     flagGroup.add(flagBase);
 
     // 3. Faint orange locator point-light (stunning for night runs!)
-    const light = new THREE.PointLight(0xff6600, 0.8, 6.0);
+    const light = new THREE.PointLight(0xff6600, 1.2, 8.0);
     light.position.y = 1.6;
     flagGroup.add(light);
 
     // 4. Code label (facing upward/ outward)
-    // Create a small voxel plate showing checkpoint code
-    const plateGeom = new THREE.BoxGeometry(0.2, 0.1, 0.2);
+    const plateGeom = new THREE.BoxGeometry(0.2, 0.08, 0.2);
     const plateMat = new THREE.MeshLambertMaterial({ color: 0xff3333 });
     const plate = new THREE.Mesh(plateGeom, plateMat);
     plate.position.y = 2.0;

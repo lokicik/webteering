@@ -148,7 +148,15 @@ export class HUD {
   }
 
   // Pre-render static topographic map elements once to save rendering performance
-  public preRenderStaticMap(terrain: { getTerrainHeight(x:number, z:number):number; getTerrainType(x:number, z:number):string; getMapSize():number }, course: Checkpoint[]) {
+  public preRenderStaticMap(
+    terrain: { 
+      getTerrainHeight(x:number, z:number):number; 
+      getTerrainType(x:number, z:number):string; 
+      getMapSize():number;
+      getVoxelColorHex?: (type: any, height?: number) => string;
+    }, 
+    course: Checkpoint[]
+  ) {
     const size = terrain.getMapSize();
     this.offscreenMapCanvas.width = size;
     this.offscreenMapCanvas.height = size;
@@ -180,7 +188,7 @@ export class HUD {
         const h = terrain.getTerrainHeight(gx, gz);
         
         // Parse hex color string to RGB channels
-        const hex = colors[type] || '#ffffff';
+        const hex = terrain.getVoxelColorHex ? terrain.getVoxelColorHex(type, h) : (colors[type] || '#ffffff');
         let r = parseInt(hex.slice(1, 3), 16);
         let g = parseInt(hex.slice(3, 5), 16);
         let b = parseInt(hex.slice(5, 7), 16);

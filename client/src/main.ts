@@ -7,6 +7,7 @@ import { Network } from './net/Network';
 import { HUD } from './ui/HUD';
 import { Sound } from './ui/Sound';
 import { Checkpoint, RoomState } from './sharedTypes';
+import { Foliage } from './game/Foliage';
 
 class WebteeringApp {
   private engine!: Engine;
@@ -15,6 +16,7 @@ class WebteeringApp {
   private elements!: Elements;
   private network!: Network;
   private hud!: HUD;
+  private foliage!: Foliage;
 
   // App States
   private activeRoomId: string | null = null;
@@ -26,6 +28,7 @@ class WebteeringApp {
   
   private isFreeplay = false;
   private headlamp: THREE.SpotLight | null = null;
+  private activeBiome = 'alpine';
 
   // Advanced Upgrades tracking
   private playerPaths: { [id: string]: { x: number; z: number }[] } = {};
@@ -61,6 +64,9 @@ class WebteeringApp {
     
     // 5. Initialise static & dynamic voxel models manager
     this.elements = new Elements(this.engine.scene);
+    
+    // 5.5. Initialise instanced nature assets manager
+    this.foliage = new Foliage(this.engine.scene);
 
     // Register active loops
     this.engine.addUpdatable(this);
@@ -167,6 +173,8 @@ class WebteeringApp {
       this.network.leaveRoom();
       this.activeRoomId = null;
       this.roomState = null;
+      this.elements.clearStaticEntities();
+      this.foliage.clear();
       document.getElementById('room-wait-screen')?.classList.add('hidden');
       document.getElementById('lobby-screen')?.classList.remove('hidden');
     });
@@ -332,44 +340,25 @@ class WebteeringApp {
     }
   }
 
-  private reloadTerrainAndCourse(seed: number, course: Checkpoint[]) {
+  private reloadTerrainAndCourse(seed: number, course: Checkpoint[], biome: string = 'alpine') {
     // Reset path recordings
     this.playerPaths = {};
     this.pathRecordTimer = 0;
     this.activeCourse = course;
 
     // Regenerate heightfield meshes
-    this.terrain = new Terrain(this.engine.scene, seed);
+    this.terrain = new Terrain(this.engine.scene, seed, biome);
     this.terrain.generateTerrainMeshes();
 
     // Redraw HUD compass/legend once
     this.elements.clearStaticEntities();
 
+    // Scatter instanced foliage matching active biome
+    this.foliage.generateFoliage(this.terrain, seed, biome);
+
     // Snap local player to dry start position height
     const startHeight = this.terrain.getTerrainHeight(0, 0);
     this.controls.position.set(0, startHeight + 1.0, 0);
-
-    // Pre-build 3D Pine trees/boulders inside terrain limits
-    // Use the LCG deterministic seeds to place static props identically for everyone!
-    const random = lcg(seed);
-    const density = 250;
-    const half = this.terrain.getMapSize() / 2;
-
-    for (let i = 0; i < density; i++) {
-      const rx = Math.round(random() * (half * 2 - 10) - half + 5);
-      const rz = Math.round(random() * (half * 2 - 10) - half + 5);
-      
-      const type = this.terrain.getTerrainType(rx, rz);
-      const h = this.terrain.getTerrainHeight(rx, rz);
-
-      if (type === 'forest' || type === 'walk' || type === 'thicket') {
-        // Spawn voxel tree
-        this.elements.createVoxelTree(rx, h, rz);
-      } else if (type === 'cliff') {
-        // Spawn voxel boulder
-        this.elements.createVoxelBoulder(rx, h, rz);
-      }
-    }
 
     // Build 3D Control flags
     course.forEach(cp => {
@@ -591,6 +580,7 @@ class WebteeringApp {
     
     this.controls.unlock();
     this.elements.clearStaticEntities();
+    this.foliage.clear();
 
     Sound.stopWindAmbience();
 
@@ -620,7 +610,7 @@ class WebteeringApp {
     document.getElementById('freeplay-drawer')?.classList.remove('hidden');
     document.getElementById('btn-toggle-options')?.classList.remove('hidden');
 
-    this.reloadTerrainAndCourse(seed, course);
+    this.reloadTerrainAndCourse(seed, course, this.activeBiome);
     this.hud.updateECard(course, []);
 
     // Start wind ambience
@@ -634,9 +624,20 @@ class WebteeringApp {
 
     // Hook sandbox sliders/options
     const selTime = document.getElementById('sel-time') as HTMLSelectElement;
+    const selBiome = document.getElementById('sel-biome') as HTMLSelectElement;
     const rngFog = document.getElementById('rng-fog') as HTMLInputElement;
     const chkFly = document.getElementById('chk-fly') as HTMLInputElement;
     const btnExit = document.getElementById('btn-exit-freeplay');
+
+    if (selBiome) {
+      selBiome.value = this.activeBiome;
+      selBiome.onchange = () => {
+        this.activeBiome = selBiome.value;
+        this.reloadTerrainAndCourse(seed, course, this.activeBiome);
+        const startHeight = this.terrain.getTerrainHeight(0, 0);
+        this.controls.position.set(0, startHeight + 1.0, 0);
+      };
+    }
 
     const updateTimeSettings = () => {
       const tod = selTime.value as 'noon' | 'sunset' | 'night';
@@ -690,6 +691,7 @@ class WebteeringApp {
     this.engine.setTimeOfDay('noon');
 
     this.elements.clearStaticEntities();
+    this.foliage.clear();
 
     Sound.stopWindAmbience();
 
@@ -746,6 +748,7 @@ class WebteeringApp {
 
     this.hud.forceHideGps = false;
     this.elements.clearStaticEntities();
+    this.foliage.clear();
 
     document.getElementById('hud-container')?.classList.add('hidden');
     document.getElementById('stamina-bar-container')?.classList.add('hidden');
@@ -819,6 +822,11 @@ class WebteeringApp {
 
     // 3. Interpolate other runners meshes and flag rotations
     this.elements.update(delta);
+
+    // Animate instanced foliage swaying and water surface ripples
+    const time = Date.now() * 0.001;
+    this.foliage.update(time);
+    this.terrain.update(time);
 
     // 4. Update HUD panel metrics (Compass Rose + 2D map canvas)
     const yaw = this.controls.getRotation().rx;
@@ -1026,14 +1034,6 @@ class WebteeringApp {
   }
 }
 
-// Deterministic multiplier helper
-function lcg(seed: number) {
-  let s = seed;
-  return function() {
-    s = (s * 1664525 + 1013904223) % 4294967296;
-    return s / 4294967296;
-  };
-}
 
 // Start application
 const app = new WebteeringApp();

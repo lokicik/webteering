@@ -53,86 +53,127 @@ class Noise2D {
   }
 }
 
-
-
 export class Terrain {
   private scene: THREE.Scene;
   private noiseGen: Noise2D;
   
   // Map dimensions
-  private mapSize = 384; // Size of map (-192 to 192)
-  private chunkSize = 32;
+  private mapSize = 384; 
   private waterLevel = 4;
-  private voxelSize = 1.0;
   
-  // Height and type caches
+  // Height and type caches (for custom imported DEM maps)
   private heightMap: { [key: string]: number } = {};
   private typeMap: { [key: string]: VoxelType } = {};
   
-  // Colors for voxel types matching standard topographic rules
-  private voxelColors: { [key in VoxelType]: number } = {
-    field: 0xffdd00,  /* Open field - Yellow */
-    forest: 0xffffff, /* White Forest (normal) */
-    walk: 0x90e090,   /* Slow Forest - light green */
-    thicket: 0x30a030, /* Thick Forest - dark green */
-    water: 0x00a0f0,   /* Lakes - Blue */
-    cliff: 0x888888,   /* Rocks / Stone - Grey */
-    path: 0xa06020     /* Paths / Dirt - Brown */
+  private biome = 'alpine';
+
+  // Aesthetic color systems per Biome
+  private biomeColors: { [biome: string]: { [key in VoxelType]: string } } = {
+    alpine: {
+      field: '#ffdd00',  // Warm gold fields (IOF Yellow)
+      forest: '#ffffff', // Standard IOF White Forest
+      walk: '#90e090',   // Slow Forest - light green
+      thicket: '#30a030', // Thick Forest - dark green
+      water: '#00a0f0',   // Blue water
+      cliff: '#7a7a7a',   // Rocks - grey
+      path: '#a06020'     // Dirt paths - brown
+    },
+    dunes: {
+      field: '#e9d8a6',  // Warm sandy dune soil
+      forest: '#f4f1de', // Soft dry forest floor
+      walk: '#a3b18a',   // Sea grass fields
+      thicket: '#2a9d8f', // Shoreline bushes
+      water: '#0077b6',   // Turquoise ocean bay water
+      cliff: '#ca6702',   // Weathered coastal sandstone
+      path: '#e0a96d'     // Soft wet sand path
+    },
+    gullies: {
+      field: '#ddb892',  // Dry desert scrub
+      forest: '#ede0d4', // Pale dry forest loam
+      walk: '#b7b7a4',   // Sparsely scattered desert bushes
+      thicket: '#4a5d4e', // Thorny cacti cluster
+      water: '#48cae4',   // Silt muddy dry riverbed water
+      cliff: '#8b3a3a',   // Severe red-rock canyon walls
+      path: '#d8b18a'     // Dusty desert track
+    },
+    sprint: {
+      field: '#52b788',  // Manicured green lawns
+      forest: '#74c69d', // Tidy city-park grass
+      walk: '#40916c',   // Ornamental slow park hedges
+      thicket: '#1b4332', // Unrunnable perimeter hedges
+      water: '#00b4d8',   // Paved concrete swimming pool water
+      cliff: '#a8a29e',   // Smooth concrete walls
+      path: '#c08552'     // Neat gravel walkway
+    }
   };
 
   private materials: { [key: string]: THREE.Material } = {};
   private chunkGroup = new THREE.Group();
+  private waterMesh: THREE.Mesh | null = null;
 
-  constructor(scene: THREE.Scene, seed: number) {
+  constructor(scene: THREE.Scene, seed: number, biome: string = 'alpine') {
     this.scene = scene;
     this.noiseGen = new Noise2D(seed);
+    this.biome = biome;
 
     this.initMaterials();
     this.scene.add(this.chunkGroup);
   }
 
   private initMaterials() {
-    // Generate mesh basic materials with vertex coloring support
-    // Standard lambert material allows shadows and lighting to shade the terrain beautifully!
+    // Lambert material supporting soft shading and lighting with smooth normals
     this.materials['terrain'] = new THREE.MeshLambertMaterial({
       vertexColors: true,
       shadowSide: THREE.DoubleSide
     });
 
-    // Special semi-transparent material for water surfaces
-    this.materials['water'] = new THREE.MeshLambertMaterial({
-      color: 0x00a0f0,
+    // Stunning glassmorphic translucent water plane
+    this.materials['water'] = new THREE.MeshStandardMaterial({
+      color: this.biomeColors[this.biome]?.water || '#00a0f0',
       transparent: true,
-      opacity: 0.6
+      opacity: 0.55,
+      roughness: 0.15,
+      metalness: 0.1,
+      side: THREE.DoubleSide
     });
   }
 
-  // Retrieve terrain elevation at arbitrary coordinates
+  // Retrieve dynamic elevation at arbitrary fractional coordinates
   public getTerrainHeight(x: number, z: number): number {
-    const rx = Math.round(x / this.voxelSize);
-    const rz = Math.round(z / this.voxelSize);
-    
-    // Bounds check
     const half = this.mapSize / 2;
-    if (Math.abs(rx) > half || Math.abs(rz) > half) {
-      return 15.0; // border mountain wall
+    if (Math.abs(x) > half || Math.abs(z) > half) {
+      return 25.0; // boundary wall
     }
 
-    const key = `${rx},${rz}`;
-    if (this.heightMap[key] !== undefined) {
-      return this.heightMap[key];
+    const isCustom = Object.keys(this.heightMap).length > 0;
+    if (isCustom) {
+      // Bilinear interpolation for imported DEM custom heightmaps to make them super smooth!
+      const x0 = Math.floor(x);
+      const x1 = x0 + 1;
+      const z0 = Math.floor(z);
+      const z1 = z0 + 1;
+
+      const h00 = this.heightMap[`${x0},${z0}`] ?? 4.0;
+      const h10 = this.heightMap[`${x1},${z0}`] ?? 4.0;
+      const h01 = this.heightMap[`${x0},${z1}`] ?? 4.0;
+      const h11 = this.heightMap[`${x1},${z1}`] ?? 4.0;
+
+      const tx = x - x0;
+      const tz = z - z0;
+
+      const h0 = h00 + tx * (h10 - h00);
+      const h1 = h01 + tx * (h11 - h01);
+      return h0 + tz * (h1 - h0);
     }
 
-    // Generate height procedurally if not cached
-    const height = this.computeProceduralHeight(rx, rz);
-    this.heightMap[key] = height;
-    return height;
+    // Evaluate procedurally with high float precision
+    return this.computeProceduralHeight(x, z);
   }
 
-  // Retrieve voxel material/terrain speed penalty type
+  // Retrieve voxel material/runnability type
   public getTerrainType(x: number, z: number): VoxelType {
-    const rx = Math.round(x / this.voxelSize);
-    const rz = Math.round(z / this.voxelSize);
+    const rx = Math.round(x);
+    const rz = Math.round(z);
     
     const key = `${rx},${rz}`;
     if (this.typeMap[key] !== undefined) {
@@ -144,30 +185,44 @@ export class Terrain {
     return type;
   }
 
-  // Procedural height generation combining sine hills and fractal noise
+  // Procedural continuous noise equation per biome
   private computeProceduralHeight(x: number, z: number): number {
     const half = this.mapSize / 2;
-    // Boundary wall
     if (Math.abs(x) >= half - 4 || Math.abs(z) >= half - 4) {
-      return 25.0; // High mountain wall to trap player
+      return 25.0; // Outer boundary lock
     }
 
-    // Layer 1: Huge sweeping hills
-    const n1 = this.noiseGen.noise(x * 0.005, z * 0.005) * 16;
-    
-    // Layer 2: Micro ridges/depressions
-    const n2 = this.noiseGen.noise(x * 0.03, z * 0.03) * 4;
-    
-    // Layer 3: Flat valleys
-    let height = Math.round(n1 + n2);
-    
-    // Smooth valley floors near water level
-    if (height < this.waterLevel) {
-      // Deep lake beds
-      height = Math.max(1, height);
+    if (this.biome === 'sprint') {
+      // Neat flat park lawns
+      const n1 = this.noiseGen.noise(x * 0.004, z * 0.004) * 2.5;
+      const n2 = this.noiseGen.noise(x * 0.02, z * 0.02) * 0.8;
+      return n1 + n2 + 5.0;
+    } else if (this.biome === 'dunes') {
+      // Soft rolling sand dunes
+      const n1 = this.noiseGen.noise(x * 0.007, z * 0.007) * 7.5;
+      const n2 = this.noiseGen.noise(x * 0.025, z * 0.025) * 1.5;
+      let height = n1 + n2 + 4.5;
+      if (height < this.waterLevel) {
+        height = Math.max(1.0, height);
+      }
+      return height;
+    } else if (this.biome === 'gullies') {
+      // Severe canyons with dry rocky clefts
+      const n1 = this.noiseGen.noise(x * 0.006, z * 0.006) * 15.0;
+      const n2 = this.noiseGen.noise(x * 0.035, z * 0.035) * 4.5;
+      const cleft = Math.pow(this.noiseGen.noise(x * 0.015, z * 0.015), 3) * 9.0;
+      let height = n1 + n2 - cleft + 6.0;
+      return Math.max(1.0, height);
+    } else {
+      // Alpine Spruce Forests (Default): High peaks, deep stone depressions
+      const n1 = this.noiseGen.noise(x * 0.005, z * 0.005) * 16.0;
+      const n2 = this.noiseGen.noise(x * 0.03, z * 0.03) * 4.0;
+      let height = n1 + n2;
+      if (height < this.waterLevel) {
+        height = Math.max(1.0, height);
+      }
+      return height;
     }
-
-    return height;
   }
 
   private computeProceduralType(x: number, z: number): VoxelType {
@@ -177,7 +232,7 @@ export class Terrain {
       return 'water';
     }
 
-    // Check slope steepness by examining neighbor heights
+    // Check steepness slope
     const hR = this.getTerrainHeight(x + 1, z);
     const hL = this.getTerrainHeight(x - 1, z);
     const hF = this.getTerrainHeight(x, z + 1);
@@ -190,29 +245,61 @@ export class Terrain {
       Math.abs(height - hB)
     );
 
-    if (maxSlope >= 2.0) {
-      return 'cliff'; // steep stone cliff
+    if (maxSlope >= 1.8 && this.biome !== 'sprint') {
+      return 'cliff'; // steep rocky zone
     }
 
-    // Procedural vegetation noise
-    const vegNoise = this.noiseGen.noise(x * 0.04 + 10, z * 0.04 + 10);
-    
-    // Create random clear winding paths
+    // Paths generation
     const pathNoise = Math.sin(x * 0.05) * Math.cos(z * 0.05);
     const pathChance = this.noiseGen.noise(x * 0.015, z * 0.015);
     if (pathChance > 0.72 && Math.abs(pathNoise) < 0.04) {
-      return 'path'; // winding path
+      return 'path';
     }
 
-    if (vegNoise > 0.82) {
-      return 'thicket'; // dark dense green brush
-    } else if (vegNoise > 0.62) {
-      return 'walk'; // light green slow forest
-    } else if (vegNoise > 0.42) {
-      return 'forest'; // white normal runnable forest
+    // Vegetation scatter thresholds
+    const vegNoise = this.noiseGen.noise(x * 0.04 + 10, z * 0.04 + 10);
+    
+    if (this.biome === 'sprint') {
+      // Tidy hedges and garden lawn layouts
+      if (vegNoise > 0.76) {
+        return 'thicket'; // solid hedge wall
+      } else if (vegNoise > 0.60) {
+        return 'walk'; // slower garden flowers
+      } else if (vegNoise > 0.45) {
+        return 'forest'; // neat park vegetation
+      }
+      return 'field';
+    } else if (this.biome === 'dunes') {
+      // Mostly yellow fields (sands) with sea grass
+      if (vegNoise > 0.85) {
+        return 'thicket';
+      } else if (vegNoise > 0.68) {
+        return 'walk';
+      } else if (vegNoise > 0.50) {
+        return 'forest';
+      }
+      return 'field';
+    } else if (this.biome === 'gullies') {
+      // Arid desert canyons: mostly bare dry soil
+      if (vegNoise > 0.88) {
+        return 'thicket';
+      } else if (vegNoise > 0.75) {
+        return 'walk';
+      } else if (vegNoise > 0.65) {
+        return 'forest';
+      }
+      return 'field';
+    } else {
+      // Alpine
+      if (vegNoise > 0.82) {
+        return 'thicket';
+      } else if (vegNoise > 0.62) {
+        return 'walk';
+      } else if (vegNoise > 0.42) {
+        return 'forest';
+      }
+      return 'field';
     }
-
-    return 'field'; // normal open yellow grass
   }
 
   // Load custom height and features maps (digital imports)
@@ -234,11 +321,34 @@ export class Terrain {
       }
     }
 
-    // Re-build all chunks
+    // Re-build
     this.generateTerrainMeshes();
   }
 
-  // Build 3D meshes for all chunks in the map
+  // Expose colors system cleanly to HUD contour map drawing
+  public getVoxelColorHex(type: VoxelType, height?: number): string {
+    const palette = this.biomeColors[this.biome] || this.biomeColors['alpine'];
+    let baseColor = palette[type] || '#ffffff';
+
+    // Polish highlights: Sandy shores & snowy cliff caps
+    if (type !== 'water' && height !== undefined) {
+      if (this.biome === 'alpine') {
+        if (height <= this.waterLevel + 0.8) {
+          return '#e5c290'; // Sandy lake beaches
+        } else if (height >= 12.0 && type === 'cliff') {
+          return '#e5e5e5'; // Stunning white snowy summits!
+        }
+      } else if (this.biome === 'dunes') {
+        if (height <= this.waterLevel + 1.2) {
+          return '#f2e8cf'; // Dune coast beaches
+        }
+      }
+    }
+
+    return baseColor;
+  }
+
+  // Create highly-optimized single-draw call deformed PlaneGeometry
   public generateTerrainMeshes() {
     // Clear old meshes
     while (this.chunkGroup.children.length > 0) {
@@ -246,178 +356,73 @@ export class Terrain {
       this.chunkGroup.remove(child);
     }
 
-    const half = this.mapSize / 2;
-    const numChunks = this.mapSize / this.chunkSize;
+    // Map segments: 192x192 offers outstanding visual smoothness at only 73,728 triangles!
+    const segments = 192;
+    const geometry = new THREE.PlaneGeometry(this.mapSize, this.mapSize, segments, segments);
+    
+    const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
+    const colors: number[] = [];
 
-    for (let cz = 0; cz < numChunks; cz++) {
-      for (let cx = 0; cx < numChunks; cx++) {
-        // Chunk bounds in grid units
-        const startX = -half + cx * this.chunkSize;
-        const startZ = -half + cz * this.chunkSize;
-        
-        this.buildChunkMesh(startX, startZ);
-      }
+    for (let i = 0; i < posAttr.count; i++) {
+      const xLocal = posAttr.getX(i);
+      const yLocal = posAttr.getY(i); 
+
+      const worldX = xLocal;
+      const worldZ = -yLocal; 
+
+      const h = this.getTerrainHeight(worldX, worldZ);
+      posAttr.setZ(i, h); 
+
+      // Gather elevation blended color
+      const type = this.getTerrainType(worldX, worldZ);
+      const hex = this.getVoxelColorHex(type, h);
+      
+      const color = new THREE.Color(hex);
+      colors.push(color.r, color.g, color.b);
     }
+
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    
+    // Rotate to fit standard 3D X-Z coordinate orientation
+    geometry.rotateX(-Math.PI / 2);
+    geometry.computeVertexNormals();
+
+    const terrainMesh = new THREE.Mesh(geometry, this.materials['terrain']);
+    terrainMesh.castShadow = true;
+    terrainMesh.receiveShadow = true;
+    this.chunkGroup.add(terrainMesh);
+
+    // Render single beautiful translucent water sheet plane
+    const waterGeom = new THREE.PlaneGeometry(this.mapSize, this.mapSize, 32, 32);
+    waterGeom.rotateX(-Math.PI / 2);
+
+    this.waterMesh = new THREE.Mesh(waterGeom, this.materials['water']);
+    this.waterMesh.position.set(0, this.waterLevel - 0.05, 0);
+    this.waterMesh.receiveShadow = true;
+    this.chunkGroup.add(this.waterMesh);
   }
 
-  // Custom high-performance exposed-face chunk mesh builder
-  private buildChunkMesh(startX: number, startZ: number) {
-    const vertices: number[] = [];
-    const colors: number[] = [];
-    const indices: number[] = [];
-    let vertexCount = 0;
+  // Animate gentle water plane surface ripples on tick
+  public update(time: number) {
+    if (this.waterMesh) {
+      const posAttr = this.waterMesh.geometry.getAttribute('position') as THREE.BufferAttribute;
+      for (let i = 0; i < posAttr.count; i++) {
+        // After rotation, world coordinate Y remains the vertical displacement axis
+        const x = posAttr.getX(i);
+        const z = posAttr.getZ(i);
 
-    const addFace = (
-      p1: THREE.Vector3, p2: THREE.Vector3, p3: THREE.Vector3, p4: THREE.Vector3,
-      colorHex: number
-    ) => {
-      // Add vertices
-      vertices.push(p1.x, p1.y, p1.z);
-      vertices.push(p2.x, p2.y, p2.z);
-      vertices.push(p3.x, p3.y, p3.z);
-      vertices.push(p4.x, p4.y, p4.z);
-
-      // Parse colors
-      const color = new THREE.Color(colorHex);
-      colors.push(color.r, color.g, color.b);
-      colors.push(color.r, color.g, color.b);
-      colors.push(color.r, color.g, color.b);
-      colors.push(color.r, color.g, color.b);
-
-      // Add two triangles per face
-      indices.push(
-        vertexCount, vertexCount + 1, vertexCount + 2,
-        vertexCount, vertexCount + 2, vertexCount + 3
-      );
-      
-      vertexCount += 4;
-    };
-
-    // Keep track of water planes in chunk
-    const waterPoints: THREE.Vector3[] = [];
-
-    // Scan all columns in this chunk
-    for (let z = 0; z < this.chunkSize; z++) {
-      for (let x = 0; x < this.chunkSize; x++) {
-        const gx = startX + x;
-        const gz = startZ + z;
-
-        const h = this.getTerrainHeight(gx, gz);
-        const type = this.getTerrainType(gx, gz);
-        const color = this.voxelColors[type];
-
-        // Core corners of voxel
-        const xMin = gx - 0.5;
-        const xMax = gx + 0.5;
-        const zMin = gz - 0.5;
-        const zMax = gz + 0.5;
-
-        // 1. TOP FACE (Air surface at height h)
-        if (type !== 'water') {
-          addFace(
-            new THREE.Vector3(xMin, h, zMin),
-            new THREE.Vector3(xMin, h, zMax),
-            new THREE.Vector3(xMax, h, zMax),
-            new THREE.Vector3(xMax, h, zMin),
-            color
-          );
-        } else {
-          // If water, add a water plane at waterLevel height
-          waterPoints.push(new THREE.Vector3(gx, this.waterLevel, gz));
-          // Ground floor under water
-          addFace(
-            new THREE.Vector3(xMin, h, zMin),
-            new THREE.Vector3(xMin, h, zMax),
-            new THREE.Vector3(xMax, h, zMax),
-            new THREE.Vector3(xMax, h, zMin),
-            0x2d4d5e // Dark deep sandy mud color
-          );
-        }
-
-        // 2. VERTICAL SIDE FACES (Only render exposed vertical walls)
-        // Check adjacent neighbors (+X, -X, +Z, -Z)
-        
-        // +X side face
-        const hRight = this.getTerrainHeight(gx + 1, gz);
-        if (hRight < h) {
-          addFace(
-            new THREE.Vector3(xMax, h, zMin),
-            new THREE.Vector3(xMax, h, zMax),
-            new THREE.Vector3(xMax, hRight, zMax),
-            new THREE.Vector3(xMax, hRight, zMin),
-            type === 'cliff' ? color : 0x7a6348 // Brown dirt vertical edge
-          );
-        }
-
-        // -X side face
-        const hLeft = this.getTerrainHeight(gx - 1, gz);
-        if (hLeft < h) {
-          addFace(
-            new THREE.Vector3(xMin, h, zMax),
-            new THREE.Vector3(xMin, h, zMin),
-            new THREE.Vector3(xMin, hLeft, zMin),
-            new THREE.Vector3(xMin, hLeft, zMax),
-            type === 'cliff' ? color : 0x7a6348
-          );
-        }
-
-        // +Z side face
-        const hFront = this.getTerrainHeight(gx, gz + 1);
-        if (hFront < h) {
-          addFace(
-            new THREE.Vector3(xMax, h, zMax),
-            new THREE.Vector3(xMin, h, zMax),
-            new THREE.Vector3(xMin, hFront, zMax),
-            new THREE.Vector3(xMax, hFront, zMax),
-            type === 'cliff' ? color : 0x7a6348
-          );
-        }
-
-        // -Z side face
-        const hBack = this.getTerrainHeight(gx, gz - 1);
-        if (hBack < h) {
-          addFace(
-            new THREE.Vector3(xMin, h, zMin),
-            new THREE.Vector3(xMax, h, zMin),
-            new THREE.Vector3(xMax, hBack, zMin),
-            new THREE.Vector3(xMin, hBack, zMin),
-            type === 'cliff' ? color : 0x7a6348
-          );
-        }
+        const wave = Math.sin(time * 1.5 + x * 0.08) * Math.cos(time * 1.2 + z * 0.08) * 0.06;
+        posAttr.setY(i, wave); 
       }
-    }
-
-    // Assemble dynamic geometry
-    if (vertices.length > 0) {
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-      geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-      geometry.setIndex(indices);
-      geometry.computeVertexNormals();
-
-      const mesh = new THREE.Mesh(geometry, this.materials['terrain']);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      this.chunkGroup.add(mesh);
-    }
-
-    // Assemble water plane if there is water in chunk
-    if (waterPoints.length > 0) {
-      const waterGeom = new THREE.PlaneGeometry(this.chunkSize, this.chunkSize);
-      waterGeom.rotateX(-Math.PI / 2);
-      
-      const waterMesh = new THREE.Mesh(waterGeom, this.materials['water']);
-      waterMesh.position.set(
-        startX + this.chunkSize / 2 - 0.5,
-        this.waterLevel - 0.05,
-        startZ + this.chunkSize / 2 - 0.5
-      );
-      waterMesh.receiveShadow = true;
-      this.chunkGroup.add(waterMesh);
+      posAttr.needsUpdate = true;
     }
   }
 
   public getMapSize(): number {
     return this.mapSize;
+  }
+
+  public getBiome(): string {
+    return this.biome;
   }
 }
