@@ -16,7 +16,7 @@ export class HUD {
   
   private punchAlert = document.getElementById('punch-alert') as HTMLElement;
   
-  private mapCanvas = document.getElementById('topo-map-canvas') as HTMLCanvasElement;
+  public mapCanvas = document.getElementById('topo-map-canvas') as HTMLCanvasElement;
   private mapCtx!: CanvasRenderingContext2D;
   private offscreenMapCanvas!: HTMLCanvasElement;
   
@@ -33,9 +33,22 @@ export class HUD {
   public manualMapAngle = 0.0;
   public forceHideGps = false;
 
+  // Silva compass bezel rotation & alignment states
+  public bezelAngle = 0.0;
+  private bezelArrowEl: HTMLElement | null = null;
+  private bezelEl = document.getElementById('compass-bezel') as HTMLElement;
+  private wasAligned = false;
+
   constructor() {
     this.mapCtx = this.mapCanvas.getContext('2d')!;
     this.offscreenMapCanvas = document.createElement('canvas');
+    
+    // Inject the Silva orienting arrow div inside the bezel housing
+    if (this.bezelEl) {
+      this.bezelArrowEl = document.createElement('div');
+      this.bezelArrowEl.className = 'bezel-orienting-arrow';
+      this.bezelEl.appendChild(this.bezelArrowEl);
+    }
     
     this.initMapToggles();
   }
@@ -106,10 +119,15 @@ export class HUD {
   }
 
   // Rotate compass bezel opposite of camera view yaw (Spring-Mass-Damper oscillation with dynamic acceleration wobble)
-  public updateCompass(cameraYaw: number, delta: number, speedFactor: number = 0, isGrounded: boolean = true) {
+  public updateCompass(cameraYaw: number, delta: number, speedFactor: number = 0, isGrounded: boolean = true, isExhausted: boolean = false) {
     if (this.compassRose) {
       // The needle rotates opposite of the player rotation to stay pointed North
       let targetAngle = -cameraYaw;
+
+      // Exhausted shaky hands wobble (erratic vibration)
+      if (isExhausted) {
+        targetAngle += (Math.random() - 0.5) * 0.28;
+      }
 
       // If moving or airborne, add physical acceleration dip/tilt/shaking wobble
       if (speedFactor > 0.05 || !isGrounded) {
@@ -144,6 +162,30 @@ export class HUD {
       
       const degrees = (this.needleAngle * 180) / Math.PI;
       this.compassRose.style.transform = `rotate(${degrees}deg)`;
+
+      // Rotate Silva Bezel Orienting Arrow
+      if (this.bezelArrowEl) {
+        const bezelDeg = (this.bezelAngle * 180) / Math.PI;
+        this.bezelArrowEl.style.transform = `translate(-50%, -50%) rotate(${bezelDeg}deg)`;
+      }
+
+      // Check alignment between magnetic needle angle and bezel orienting arrow
+      let alignDiff = this.needleAngle - this.bezelAngle;
+      alignDiff = Math.atan2(Math.sin(alignDiff), Math.cos(alignDiff));
+      const isAligned = Math.abs(alignDiff) < 0.087; // ~5 degrees tolerance window
+
+      if (this.bezelEl) {
+        if (isAligned) {
+          this.bezelEl.classList.add('aligned');
+          if (!this.wasAligned) {
+            Sound.playLockChime();
+          }
+          this.wasAligned = true;
+        } else {
+          this.bezelEl.classList.remove('aligned');
+          this.wasAligned = false;
+        }
+      }
     }
   }
 

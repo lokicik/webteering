@@ -826,6 +826,49 @@ body, html {
   pointer-events: none;
 }
 
+/* Silva Bezel Orienting Arrow & Alignment Glow */
+.bezel-orienting-arrow {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 14px;
+  height: 76px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.bezel-orienting-arrow::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  width: 0;
+  height: 0;
+  transform: translateX(-50%);
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 12px solid rgba(255, 170, 0, 0.85); /* Silva Yellow/Orange */
+}
+
+.bezel-orienting-arrow::after {
+  content: '';
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  width: 2px;
+  height: 52px;
+  transform: translateX(-50%);
+  background: rgba(255, 170, 0, 0.35); /* Orienting line */
+}
+
+#compass-bezel.aligned {
+  border-color: #33ff33 !important;
+  box-shadow: 0 0 15px rgba(51, 255, 51, 0.7), 0 10px 25px rgba(0, 0, 0, 0.6) !important;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+
 /* Floating Topographic Map Paper (Center Screen) */
 .map-paper {
   position: absolute;

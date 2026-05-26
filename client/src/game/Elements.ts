@@ -316,6 +316,59 @@ export class Elements {
       if (flagBase) {
         flagBase.rotation.y += 0.8 * delta;
       }
+
+      // Slowly interpolate flashed green lights back to orange
+      const light = flag.children.find(child => child instanceof THREE.PointLight) as THREE.PointLight;
+      if (light && light.color.getHex() === 0x00ff00) {
+        light.intensity = THREE.MathUtils.lerp(light.intensity, 1.2, 2.5 * delta);
+        if (light.intensity <= 1.4) {
+          light.color.setHex(0xff6600); // revert to orange
+          light.intensity = 1.2;
+        }
+      }
+
+      if (flagBase) {
+        flagBase.traverse(child => {
+          if (child instanceof THREE.Mesh && child.userData.originalEmissive !== undefined) {
+            const mat = child.material as THREE.MeshLambertMaterial;
+            if (mat.emissive && mat.emissive.getHex() === 0x00ff00) {
+              const lerpColor = new THREE.Color(0x00ff00).clone().lerp(new THREE.Color(0xff6600), 2.5 * delta);
+              mat.emissive.copy(lerpColor);
+              mat.color.copy(lerpColor);
+              if (mat.emissive.getHex() === 0xff6600) {
+                delete child.userData.originalEmissive;
+              }
+            }
+          }
+        });
+      }
+    }
+  }
+
+  // Flash a specific flag green temporarily upon successfully punching it!
+  public flashFlagGreen(cpId: number) {
+    const flag = this.scene.getObjectByName(`cp-${cpId}`);
+    if (flag) {
+      // Find the PointLight child
+      const light = flag.children.find(child => child instanceof THREE.PointLight) as THREE.PointLight;
+      if (light) {
+        light.color.setHex(0x00ff00); // neon green
+        light.intensity = 4.5; // flash bright!
+      }
+      
+      const flagBase = flag.children[1] as THREE.Group;
+      if (flagBase) {
+        flagBase.traverse(child => {
+          if (child instanceof THREE.Mesh && child.material) {
+            const mat = child.material as THREE.MeshLambertMaterial;
+            if (mat.color && (mat.color.getHex() === 0xff6600 || mat.emissive?.getHex() === 0xff6600)) {
+              child.userData.originalEmissive = 0xff6600;
+              mat.emissive.setHex(0x00ff00);
+              mat.color.setHex(0x00ff00);
+            }
+          }
+        });
+      }
     }
   }
 

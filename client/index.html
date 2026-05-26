@@ -163,6 +163,13 @@
       </div>
       <!-- Blind Search Header Banner -->
       <div id="relaxed-mode-banner" class="hidden" style="color: #00ccff; font-family: var(--font-mono); font-size: 0.75rem; font-weight: bold; letter-spacing: 1px; margin-top: 6px;">BLIND SEARCH - GPS DISABLED</div>
+      <!-- Rogaine Score Counter and Timer Bar -->
+      <div id="score-counter-container" class="hidden" style="color: #ffaa00; font-family: var(--font-tech); font-size: 0.95rem; font-weight: bold; margin-top: 6px;">
+        SCORE: <span id="score-val">0</span> / <span id="score-max">150</span>
+      </div>
+      <div id="rogaine-timer-container" class="hidden" style="width: 100%; max-width: 200px; height: 6px; background: rgba(255,255,255,0.15); border-radius: 3px; overflow: hidden; margin: 6px auto 0 auto;">
+        <div id="rogaine-timer-fill" style="width: 100%; height: 100%; background: #ffaa00; transition: width 0.1s linear;"></div>
+      </div>
     </div>
 
     <!-- Active Checkpoint & E-Card Punch List -->
@@ -247,6 +254,24 @@
           <input type="checkbox" id="chk-gps" checked>
         </div>
         <div class="form-group-sm">
+          <label>Map View Mode</label>
+          <select id="sel-map-view">
+            <option value="2d" selected>2D HUD Overlay</option>
+            <option value="3d">3D Handheld Sim 🧭</option>
+          </select>
+        </div>
+        <div class="form-group-sm">
+          <label>Game Mode</label>
+          <select id="sel-game-mode">
+            <option value="classic">Classic (Sequential)</option>
+            <option value="rogaine">Rogaine (Free Order)</option>
+          </select>
+        </div>
+        <div class="form-group-sm">
+          <label>Active Rain/Storm</label>
+          <input type="checkbox" id="chk-rain">
+        </div>
+        <div class="form-group-sm">
           <label>Time of Day</label>
           <select id="sel-time">
             <option value="noon">Sunny Noon</option>
@@ -284,7 +309,7 @@
     <!-- In-game UI Toggles (bottom bar) -->
     <div id="hud-bottom-bar">
       <button id="btn-toggle-map" class="hud-btn glow-hover" title="Toggle Topographic Map (M)">🗺️ MAP</button>
-      <p class="controls-hint">WASD to Move | Mouse to Look | E to Punch | M for Map</p>
+      <p class="controls-hint">WASD to Move | Mouse to Look | E to Punch | M for Map | [ / ] to Rotate Bezel</p>
       <button id="btn-toggle-options" class="hud-btn glow-hover hidden" title="Toggle Sandbox Settings">⚙️ SETTINGS</button>
     </div>
   </div>

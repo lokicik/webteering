@@ -29,6 +29,9 @@ class WebteeringApp {
   private isFreeplay = false;
   private headlamp: THREE.SpotLight | null = null;
   private activeBiome = 'alpine';
+  private isRogaine = false;
+  private rogainePunchedCps: number[] = [];
+  private rogainePoints = 0;
 
   // Advanced Upgrades tracking
   private playerPaths: { [id: string]: { x: number; z: number }[] } = {};
@@ -43,6 +46,20 @@ class WebteeringApp {
   // Dynamic audio synthesiser timer
   private breathingTimer = 0.0;
 
+  // 3D Handheld & Silva Bezel properties
+  private mapDisplayMode: '2d' | '3d' = '2d';
+  private is3DMapOpen = false;
+  private handheldGroup: THREE.Group | null = null;
+  private handheldMapMesh: THREE.Mesh | null = null;
+  private handheldMapTexture: THREE.CanvasTexture | null = null;
+  private handheldCompassGroup: THREE.Group | null = null;
+  private handheldNeedle: THREE.Group | null = null;
+  private handheldBezelRing: THREE.Group | null = null;
+  private bezelClickTimer = 0.0;
+
+  // Breath condensation puffs
+  private breathPuffs: { mesh: THREE.Mesh; vel: THREE.Vector3; age: number; maxAge: number }[] = [];
+
   constructor() {
     this.initCore();
     this.initLobbyUI();
@@ -55,6 +72,9 @@ class WebteeringApp {
     // 2. Initialise HUD UI
     this.hud = new HUD();
     
+    // 2.5. Initialize 3D Handheld Map and Compass parented to camera
+    this.init3DHandheldObjects();
+
     // 3. Initialise procedural terrain
     // Start with a temporary placeholder seed, we reload on join
     this.terrain = new Terrain(this.engine.scene, 12345);
@@ -596,14 +616,38 @@ class WebteeringApp {
   private startFreeplayMode() {
     this.isFreeplay = true;
     this.isTutorial = false;
+    this.rogainePunchedCps = [];
+    this.rogainePoints = 0;
+    this.relaxedStartTime = Date.now(); // Store start time for splits and Rogaine time limits
 
     // Load random freeplay seed (seed = random)
     const seed = Math.floor(Math.random() * 1000000);
+    
+    // Matured freeplay course matching the 5-point checkpoints + 1 Finish checkpoint
     const course = [
-      { id: 1, code: '51', x: 40, z: -30, description: 'Boulder, West side' },
-      { id: 2, code: '52', x: -80, z: 70, description: 'Gully, upper part' },
-      { id: 3, code: 'F', x: 0, z: 10, description: 'Finish line' }
+      { id: 1, code: '31', x: 40, z: -30, description: 'Boulder, West side' },
+      { id: 2, code: '32', x: -80, z: 70, description: 'Gully, upper part' },
+      { id: 3, code: '33', x: 60, z: 80, description: 'Spur, foot of slope' },
+      { id: 4, code: '34', x: -100, z: -80, description: 'Thicket, South edge' },
+      { id: 5, code: '35', x: 20, z: -100, description: 'Hill, top' },
+      { id: 6, code: 'F', x: 0, z: 10, description: 'Finish banner' }
     ];
+
+    const selGameMode = document.getElementById('sel-game-mode') as HTMLSelectElement;
+    this.isRogaine = selGameMode ? (selGameMode.value === 'rogaine') : false;
+
+    // Toggle score HUD panels on freeplay reload
+    const scoreCounterContainer = document.getElementById('score-counter-container');
+    const rogaineTimerContainer = document.getElementById('rogaine-timer-container');
+    if (this.isRogaine) {
+      scoreCounterContainer?.classList.remove('hidden');
+      rogaineTimerContainer?.classList.remove('hidden');
+      const scoreVal = document.getElementById('score-val');
+      if (scoreVal) scoreVal.innerText = '0';
+    } else {
+      scoreCounterContainer?.classList.add('hidden');
+      rogaineTimerContainer?.classList.add('hidden');
+    }
 
     document.getElementById('lobby-screen')?.classList.add('hidden');
     document.getElementById('hud-container')?.classList.remove('hidden');
@@ -625,9 +669,55 @@ class WebteeringApp {
     // Hook sandbox sliders/options
     const selTime = document.getElementById('sel-time') as HTMLSelectElement;
     const selBiome = document.getElementById('sel-biome') as HTMLSelectElement;
+    const selGameModeOpt = document.getElementById('sel-game-mode') as HTMLSelectElement;
     const rngFog = document.getElementById('rng-fog') as HTMLInputElement;
     const chkFly = document.getElementById('chk-fly') as HTMLInputElement;
+    const chkRain = document.getElementById('chk-rain') as HTMLInputElement;
     const btnExit = document.getElementById('btn-exit-freeplay');
+
+    const selMapView = document.getElementById('sel-map-view') as HTMLSelectElement;
+    if (selMapView) {
+      selMapView.value = this.mapDisplayMode;
+      selMapView.onchange = () => {
+        this.mapDisplayMode = selMapView.value as '2d' | '3d';
+        this.syncMapViewMode();
+      };
+    }
+
+    if (selGameModeOpt) {
+      selGameModeOpt.value = this.isRogaine ? 'rogaine' : 'classic';
+      selGameModeOpt.onchange = () => {
+        this.isRogaine = (selGameModeOpt.value === 'rogaine');
+        this.rogainePunchedCps = [];
+        this.rogainePoints = 0;
+
+        // Toggle Score Overlay HUD
+        const scoreCounterContainer = document.getElementById('score-counter-container');
+        const rogaineTimerContainer = document.getElementById('rogaine-timer-container');
+        if (this.isRogaine) {
+          scoreCounterContainer?.classList.remove('hidden');
+          rogaineTimerContainer?.classList.remove('hidden');
+          const scoreVal = document.getElementById('score-val');
+          if (scoreVal) scoreVal.innerText = '0';
+        } else {
+          scoreCounterContainer?.classList.add('hidden');
+          rogaineTimerContainer?.classList.add('hidden');
+        }
+
+        this.reloadTerrainAndCourse(seed, course, this.activeBiome);
+        const startHeight = this.terrain.getTerrainHeight(0, 0);
+        this.controls.position.set(0, startHeight + 1.0, 0);
+      };
+    }
+
+    if (chkRain) {
+      chkRain.checked = this.controls.isRaining;
+      chkRain.onchange = () => {
+        const active = chkRain.checked;
+        this.controls.isRaining = active;
+        this.engine.setRainActive(active);
+      };
+    }
 
     if (selBiome) {
       selBiome.value = this.activeBiome;
@@ -681,6 +771,11 @@ class WebteeringApp {
   private exitFreeplay() {
     this.isFreeplay = false;
     this.controls.unlock();
+
+    this.mapDisplayMode = '2d';
+    this.syncMapViewMode();
+    const selMapView = document.getElementById('sel-map-view') as HTMLSelectElement;
+    if (selMapView) selMapView.value = '2d';
     
     if (this.headlamp) {
       this.engine.scene.remove(this.headlamp);
@@ -689,6 +784,10 @@ class WebteeringApp {
 
     // Restore standard day ambient lighting
     this.engine.setTimeOfDay('noon');
+    this.engine.setRainActive(false);
+    this.controls.isRaining = false;
+    const chkRain = document.getElementById('chk-rain') as HTMLInputElement;
+    if (chkRain) chkRain.checked = false;
 
     this.elements.clearStaticEntities();
     this.foliage.clear();
@@ -698,6 +797,8 @@ class WebteeringApp {
     document.getElementById('hud-container')?.classList.add('hidden');
     document.getElementById('stamina-bar-container')?.classList.add('hidden');
     document.getElementById('relaxed-mode-banner')?.classList.add('hidden');
+    document.getElementById('score-counter-container')?.classList.add('hidden');
+    document.getElementById('rogaine-timer-container')?.classList.add('hidden');
     document.getElementById('freeplay-drawer')?.classList.add('hidden');
     document.getElementById('btn-toggle-options')?.classList.add('hidden');
     document.getElementById('lobby-screen')?.classList.remove('hidden');
@@ -828,11 +929,64 @@ class WebteeringApp {
     this.foliage.update(time);
     this.terrain.update(time);
 
+    // Sync locally tracked swimming state
+    this.isSwimming = (this.terrain.getTerrainType(this.controls.position.x, this.controls.position.z) === 'water');
+
     // 4. Update HUD panel metrics (Compass Rose + 2D map canvas)
     const yaw = this.controls.getRotation().rx;
+
+    // Sync 3D Handheld raising/lowering and visual alignments
+    if (this.handheldGroup) {
+      const mapPanel = document.getElementById('map-panel');
+      const isMapOpen = mapPanel && !mapPanel.classList.contains('hidden');
+      
+      this.is3DMapOpen = !!isMapOpen;
+
+      const targetY = (this.is3DMapOpen && this.mapDisplayMode === '3d') ? 0.0 : -1.5;
+      this.handheldGroup.position.y += (targetY - this.handheldGroup.position.y) * 8.0 * delta;
+
+      // Update visibility of 3D meshes to avoid occlusion when closed
+      this.handheldGroup.visible = (this.handheldGroup.position.y > -1.45);
+
+      if (this.handheldGroup.visible) {
+        // Rotate 3D Magnetic Needle (stays aligned with absolute North)
+        if (this.handheldNeedle) {
+          this.handheldNeedle.rotation.y = -yaw;
+        }
+
+        // Rotate 3D Bezel Ring (Silva Orienting Arrow)
+        if (this.handheldBezelRing) {
+          this.handheldBezelRing.rotation.y = this.hud.bezelAngle;
+        }
+
+        // Flag dynamic canvas texture upload to GPU
+        if (this.handheldMapTexture) {
+          this.handheldMapTexture.needsUpdate = true;
+        }
+      }
+    }
+
+    // Manual Bezel Rotation key hooks ([ / ])
+    if (this.keysPressed['BracketLeft']) {
+      this.hud.bezelAngle -= 1.8 * delta;
+      this.bezelClickTimer -= delta;
+      if (this.bezelClickTimer <= 0) {
+        Sound.playDialClick();
+        this.bezelClickTimer = 0.07;
+      }
+    } else if (this.keysPressed['BracketRight']) {
+      this.hud.bezelAngle += 1.8 * delta;
+      this.bezelClickTimer -= delta;
+      if (this.bezelClickTimer <= 0) {
+        Sound.playDialClick();
+        this.bezelClickTimer = 0.07;
+      }
+    } else {
+      this.bezelClickTimer = 0.0;
+    }
     const speedFactor = this.controls.getSpeedFactor();
     const isGrounded = this.controls.getIsGrounded();
-    this.hud.updateCompass(yaw, delta, speedFactor, isGrounded);
+    this.hud.updateCompass(yaw, delta, speedFactor, isGrounded, this.controls.isExhausted);
 
     // Manual Map Rotation Q/R key hooks
     if (this.hud.mapMode === 'manual') {
@@ -861,17 +1015,20 @@ class WebteeringApp {
     }
 
     // Rhythmic heavy breathing sound triggers dynamically based on exhaustion heart-rate levels
-    const needsBreathing = (this.controls.isExhausted || this.controls.stamina < 30.0) && !this.isTutorial && !this.controls.isFlightMode;
+    const needsBreathing = (this.controls.isExhausted || this.controls.stamina < 55.0) && !this.isTutorial && !this.controls.isFlightMode;
     if (needsBreathing) {
       this.breathingTimer += delta;
       
       // Calculate heart-rate breathing tempo factor (0.0 = exhausted/full pulse, 1.0 = moderately tired)
-      const staminaFactor = Math.max(0.0, Math.min(1.0, this.controls.stamina / 30.0));
+      const staminaFactor = Math.max(0.0, Math.min(1.0, (this.controls.stamina - 30.0) / 25.0));
       const breathingInterval = 0.85 + staminaFactor * 0.75; // Ranges dynamically from 0.85s to 1.60s
       
       if (this.breathingTimer >= breathingInterval) {
         this.breathingTimer = 0.0;
         Sound.playSingleBreath(staminaFactor);
+        
+        // Spawn stamina condensation vapor puffs in cold weather
+        this.spawnBreathPuff();
       }
     } else {
       this.breathingTimer = 0.0;
@@ -895,10 +1052,41 @@ class WebteeringApp {
       this.hud.updateLeaderboard(this.roomState.scoreboard, this.localPlayerId);
     } else if (this.isRelaxed) {
       this.hud.updateTimers('racing', this.relaxedStartTime, serverTime);
+    } else if (this.isFreeplay) {
+      // Offline Sandbox Race Timer
+      this.hud.updateTimers('racing', this.relaxedStartTime, serverTime);
+
+      // Rogaine Score mode real-time countdown progress and penalties
+      if (this.isRogaine) {
+        const elapsedSecs = (Date.now() - this.relaxedStartTime) / 1000;
+        const remaining = Math.max(0, 120 - elapsedSecs);
+        
+        const timerFill = document.getElementById('rogaine-timer-fill');
+        if (timerFill) {
+          const pct = (remaining / 120) * 100;
+          timerFill.style.width = `${pct}%`;
+          
+          if (remaining <= 0) {
+            timerFill.style.background = '#ff3333'; // warning red
+            
+            const exceeded = elapsedSecs - 120;
+            const penalty = Math.ceil(exceeded / 10) * 10;
+            const scoreVal = document.getElementById('score-val');
+            if (scoreVal) {
+              scoreVal.innerHTML = `${Math.max(0, this.rogainePoints - penalty)} <span style="color: #ff3333; font-size: 0.75rem;">(Penalty -${penalty})</span>`;
+            }
+          } else {
+            timerFill.style.background = '#ffaa00';
+          }
+        }
+      }
     }
 
     // 7. Tutorial triggers checks
     this.evaluateTutorialTriggers();
+
+    // 8. Update breath vapor puffs physics
+    this.updateBreathPuffs(delta);
   }
 
   // Check proximity to target checkpoint flag to render "Press E" HUD prompts
@@ -915,7 +1103,7 @@ class WebteeringApp {
       punchedCps = Array.from({ length: this.tutorialStep - 4 }, (_, i) => i);
     } else if (this.isFreeplay) {
       activeCourse = this.activeCourse;
-      punchedCps = []; // mock
+      punchedCps = this.isRogaine ? this.rogainePunchedCps : [];
     } else if (this.isRelaxed) {
       activeCourse = this.activeCourse;
       punchedCps = this.relaxedPunchedCps;
@@ -926,6 +1114,36 @@ class WebteeringApp {
 
     if (activeCourse.length === 0) {
       this.hud.hideActionPrompt();
+      return;
+    }
+
+    if (this.isRogaine) {
+      let nearCpIndex = -1;
+      for (let i = 0; i < activeCourse.length; i++) {
+        if (punchedCps.includes(i)) continue;
+        
+        const cp = activeCourse[i];
+        const dx = this.controls.position.x - cp.x;
+        const dz = this.controls.position.z - cp.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        
+        if (dist <= 3.0) {
+          nearCpIndex = i;
+          break;
+        }
+      }
+
+      if (nearCpIndex !== -1) {
+        const targetCp = activeCourse[nearCpIndex];
+        this.hud.showActionPrompt(targetCp.code, true);
+
+        if (this.keysPressed['KeyE']) {
+          this.keysPressed['KeyE'] = false; // consume input
+          this.executePunchAction(nearCpIndex);
+        }
+      } else {
+        this.hud.hideActionPrompt();
+      }
       return;
     }
 
@@ -1003,8 +1221,82 @@ class WebteeringApp {
         this.updateTutorialProgress();
       }
     } else if (this.isFreeplay) {
-      // Standard local sandbox audio feedback
-      Sound.playPunch();
+      if (this.isRogaine) {
+        if (this.rogainePunchedCps.includes(index)) return;
+        this.rogainePunchedCps.push(index);
+        this.hud.updateECard(this.activeCourse, this.rogainePunchedCps);
+
+        const cp = this.activeCourse[index];
+        if (cp.code === 'F') {
+          // Finish banner!
+          Sound.playPunch();
+          
+          // Calculate time overrun penalty: limit is 120 seconds
+          const elapsedSecs = (Date.now() - this.relaxedStartTime) / 1000;
+          if (elapsedSecs > 120) {
+            const exceeded = elapsedSecs - 120;
+            const penalty = Math.ceil(exceeded / 10) * 10;
+            this.rogainePoints = Math.max(0, this.rogainePoints - penalty);
+            const scoreVal = document.getElementById('score-val');
+            if (scoreVal) scoreVal.innerText = `${this.rogainePoints} (Penalty -${penalty})`;
+          }
+          
+          this.hud.triggerPunchAlert('F', 'Finish banner', Date.now() - this.relaxedStartTime);
+          this.controls.unlock();
+          
+          // Generate a fake multiplayer scoreboard entry to show on podium screen
+          this.roomState = {
+            id: 'freeplay',
+            name: 'Sandbox Rogaine',
+            players: {
+              local: {
+                id: 'local',
+                name: 'Runner (You)',
+                x: this.controls.position.x,
+                y: this.controls.position.y,
+                z: this.controls.position.z,
+                rx: 0,
+                ry: 0,
+                anim: 'idle',
+                skinColor: '#ffaa00',
+                punchedCheckpoints: this.rogainePunchedCps
+              }
+            },
+            status: 'finished',
+            mapSeed: 123,
+            startTime: this.relaxedStartTime,
+            course: this.activeCourse,
+            scoreboard: {
+              local: {
+                id: 'local',
+                name: 'Runner (You)',
+                finished: true,
+                elapsed: Date.now() - this.relaxedStartTime,
+                splits: this.rogainePunchedCps.map(() => Date.now() - this.relaxedStartTime) // mock splits
+              }
+            }
+          };
+
+          setTimeout(() => {
+            this.showScoreboardSummary();
+          }, 1200);
+        } else {
+          // Punching a regular control checkpoint flag!
+          Sound.playPunch();
+          this.elements.flashFlagGreen(cp.id);
+          
+          const pts = (parseInt(cp.code) - 30) * 10;
+          this.rogainePoints += pts;
+          
+          const scoreVal = document.getElementById('score-val');
+          if (scoreVal) scoreVal.innerText = this.rogainePoints.toString();
+          
+          this.hud.triggerPunchAlert(cp.code, cp.description, Date.now() - this.relaxedStartTime);
+        }
+      } else {
+        // Classic sequential freeplay
+        Sound.playPunch();
+      }
     } else if (this.isRelaxed) {
       Sound.playPunch();
       this.relaxedPunchedCps.push(0);
@@ -1031,6 +1323,185 @@ class WebteeringApp {
     window.addEventListener('keyup', (e) => {
       this.keysPressed[e.code] = false;
     });
+  }
+
+  // --- 3D HANDHELD MAP & COMPASS INITIALIZATION ---
+  private init3DHandheldObjects() {
+    this.handheldGroup = new THREE.Group();
+    // Start collapsed below view
+    this.handheldGroup.position.set(0, -1.5, 0);
+    this.engine.camera.add(this.handheldGroup);
+
+    // 1. 3D Map Sheet Mesh (Canvas Texture)
+    const mapGeom = new THREE.PlaneGeometry(0.35, 0.35);
+    const mapMat = new THREE.MeshBasicMaterial({
+      side: THREE.DoubleSide,
+      transparent: true,
+      depthWrite: false
+    });
+    
+    // Canvas texture linked to active map HUD canvas
+    this.handheldMapTexture = new THREE.CanvasTexture(this.hud.mapCanvas);
+    this.handheldMapTexture.colorSpace = THREE.SRGBColorSpace;
+    mapMat.map = this.handheldMapTexture;
+
+    this.handheldMapMesh = new THREE.Mesh(mapGeom, mapMat);
+    // Tilted beautifully in left handheld viewport space
+    this.handheldMapMesh.position.set(-0.16, -0.22, -0.42);
+    this.handheldMapMesh.rotation.set(-0.6, 0.3, 0.1);
+    this.handheldGroup.add(this.handheldMapMesh);
+
+    // 2. 3D Compass Capsule Mesh Group
+    this.handheldCompassGroup = new THREE.Group();
+    this.handheldCompassGroup.position.set(0.16, -0.24, -0.42);
+    this.handheldCompassGroup.rotation.set(-0.6, -0.3, -0.1);
+    this.handheldGroup.add(this.handheldCompassGroup);
+
+    // A. Metal Casing
+    const caseGeom = new THREE.CylinderGeometry(0.045, 0.045, 0.012, 16);
+    const caseMat = new THREE.MeshStandardMaterial({
+      color: 0xcccccc,
+      metalness: 0.82,
+      roughness: 0.2
+    });
+    const compassCase = new THREE.Mesh(caseGeom, caseMat);
+    compassCase.rotation.x = Math.PI / 2;
+    this.handheldCompassGroup.add(compassCase);
+
+    // B. Rotatable Bezel Ring
+    this.handheldBezelRing = new THREE.Group();
+    this.handheldBezelRing.position.y = 0.007; // On top of base
+    this.handheldCompassGroup.add(this.handheldBezelRing);
+
+    const ringGeom = new THREE.CylinderGeometry(0.046, 0.046, 0.004, 16);
+    const ringMat = new THREE.MeshStandardMaterial({
+      color: 0x1f1f1f,
+      roughness: 0.8
+    });
+    const bezelRingMesh = new THREE.Mesh(ringGeom, ringMat);
+    bezelRingMesh.rotation.x = Math.PI / 2;
+    this.handheldBezelRing.add(bezelRingMesh);
+
+    // Yellow orienting arrow on bezel
+    const indicatorGeom = new THREE.BoxGeometry(0.004, 0.002, 0.024);
+    const indicatorMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
+    const indicator = new THREE.Mesh(indicatorGeom, indicatorMat);
+    indicator.position.set(0, 0.003, -0.026);
+    this.handheldBezelRing.add(indicator);
+
+    // C. Glass capsule cover
+    const glassGeom = new THREE.CylinderGeometry(0.040, 0.040, 0.002, 16);
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.35,
+      roughness: 0.1
+    });
+    const glassCover = new THREE.Mesh(glassGeom, glassMat);
+    glassCover.position.y = 0.009;
+    glassCover.rotation.x = Math.PI / 2;
+    this.handheldCompassGroup.add(glassCover);
+
+    // D. 3D Magnetic Needle Dial
+    this.handheldNeedle = new THREE.Group();
+    this.handheldNeedle.position.y = 0.004; // inside capsule
+    this.handheldCompassGroup.add(this.handheldNeedle);
+
+    // North Pointer (Red Cone)
+    const needleNorthGeom = new THREE.ConeGeometry(0.005, 0.032, 4);
+    const needleNorthMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
+    const needleNorth = new THREE.Mesh(needleNorthGeom, needleNorthMat);
+    needleNorth.position.z = -0.016;
+    needleNorth.rotation.x = Math.PI / 2;
+    this.handheldNeedle.add(needleNorth);
+
+    // South Pointer (White Cone)
+    const needleSouthGeom = new THREE.ConeGeometry(0.005, 0.032, 4);
+    const needleSouthMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const needleSouth = new THREE.Mesh(needleSouthGeom, needleSouthMat);
+    needleSouth.position.z = 0.016;
+    needleSouth.rotation.x = -Math.PI / 2;
+    this.handheldNeedle.add(needleSouth);
+  }
+
+  // Synchronize 2D flat panel overlays and 3D raising animations
+  private syncMapViewMode() {
+    const mapPanel = document.getElementById('map-panel');
+    if (!mapPanel) return;
+
+    if (this.mapDisplayMode === '3d') {
+      mapPanel.style.visibility = 'hidden';
+    } else {
+      mapPanel.style.visibility = 'visible';
+      this.is3DMapOpen = false;
+    }
+  }
+
+  // Spawn dynamic white condensation stamina vapor puffs
+  private spawnBreathPuff() {
+    const todSelect = document.getElementById('sel-time') as HTMLSelectElement;
+    const isNight = todSelect ? (todSelect.value === 'night') : false;
+    const isCold = this.controls.isRaining || isNight;
+    
+    if (!isCold) return;
+
+    const puffGeom = new THREE.SphereGeometry(0.04, 5, 5);
+    const puffMat = new THREE.MeshBasicMaterial({
+      color: 0xeeeeee,
+      transparent: true,
+      opacity: 0.35,
+      depthWrite: false
+    });
+    
+    const mesh = new THREE.Mesh(puffGeom, puffMat);
+    
+    const pos = this.engine.camera.position.clone();
+    const lookDir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.engine.camera.quaternion);
+    
+    pos.addScaledVector(lookDir, 0.45); // mouth forward distance
+    pos.y -= 0.15; // mouth vertical height
+    mesh.position.copy(pos);
+    
+    this.engine.scene.add(mesh);
+    
+    // Random velocity drift
+    const vel = lookDir.clone()
+      .multiplyScalar(0.42)
+      .add(new THREE.Vector3(
+        (Math.random() - 0.5) * 0.08,
+        0.22 + Math.random() * 0.12,
+        (Math.random() - 0.5) * 0.08
+      ));
+      
+    this.breathPuffs.push({
+      mesh,
+      vel,
+      age: 0.0,
+      maxAge: 1.2 + Math.random() * 0.4
+    });
+  }
+
+  // Update scale drift and disposals of vapor meshes
+  private updateBreathPuffs(delta: number) {
+    for (let i = this.breathPuffs.length - 1; i >= 0; i--) {
+      const puff = this.breathPuffs[i];
+      puff.age += delta;
+      
+      if (puff.age >= puff.maxAge) {
+        this.engine.scene.remove(puff.mesh);
+        puff.mesh.geometry.dispose();
+        (puff.mesh.material as THREE.Material).dispose();
+        this.breathPuffs.splice(i, 1);
+      } else {
+        puff.mesh.position.addScaledVector(puff.vel, delta);
+        
+        const scale = 1.0 + (puff.age / puff.maxAge) * 4.5;
+        puff.mesh.scale.set(scale, scale, scale);
+        
+        const mat = puff.mesh.material as THREE.MeshBasicMaterial;
+        mat.opacity = 0.35 * (1.0 - puff.age / puff.maxAge);
+      }
+    }
   }
 }
 

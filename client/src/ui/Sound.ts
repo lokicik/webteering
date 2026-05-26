@@ -237,4 +237,241 @@ export class Sound {
       console.warn('Breathing synthesis failed', err);
     }
   }
+
+  // Synthesize dynamic ground footsteps based on runnability speed penalty types
+  public static playStep(type: string, speedFactor: number) {
+    try {
+      const ctx = this.getContext();
+      const now = ctx.currentTime;
+      const bufferSource = ctx.createBufferSource();
+      bufferSource.buffer = this.getNoiseBuffer(ctx);
+
+      const filter = ctx.createBiquadFilter();
+      const gain = ctx.createGain();
+
+      let duration = 0.10;
+      let volume = 0.012 * Math.min(1.6, speedFactor + 0.3);
+
+      if (type === 'path') {
+        // Crunchy gravel/dirt scrape
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(1400, now);
+        filter.Q.setValueAtTime(3.5, now);
+        duration = 0.08;
+      } else if (type === 'water') {
+        // Wet sloshing
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(260, now);
+        duration = 0.18;
+        volume *= 1.8;
+      } else if (type === 'thicket') {
+        // Snapping twigs and dry leaves rustling
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(750, now);
+        filter.Q.setValueAtTime(1.8, now);
+        duration = 0.14;
+        volume *= 1.4;
+
+        // Add high pitch snap crackle click
+        const osc = ctx.createOscillator();
+        const oscGain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(700 + Math.random() * 900, now);
+        oscGain.gain.setValueAtTime(volume * 1.4, now);
+        oscGain.gain.exponentialRampToValueAtTime(0.001, now + 0.025);
+        osc.connect(oscGain);
+        oscGain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.025);
+      } else {
+        // field / forest / walk: soft grass swishing rustle
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(450, now);
+        filter.Q.setValueAtTime(2.0, now);
+        duration = 0.11;
+      }
+
+      gain.gain.setValueAtTime(volume, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+      bufferSource.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+
+      bufferSource.start(now);
+      bufferSource.stop(now + duration);
+    } catch (err) {
+      // Fail silently
+    }
+  }
+
+  // Synthesize low-frequency dry rolling thunder cracks with echoes
+  public static playThunder() {
+    try {
+      const ctx = this.getContext();
+      const now = ctx.currentTime;
+
+      // 1. Initial rumble crack
+      const bufferSource = ctx.createBufferSource();
+      bufferSource.buffer = this.getNoiseBuffer(ctx);
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(110, now);
+      
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.28, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 2.8);
+
+      bufferSource.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      bufferSource.start(now);
+      bufferSource.stop(now + 2.8);
+
+      // 2. Rolling echo delay
+      const echoDelay = ctx.createDelay();
+      echoDelay.delayTime.setValueAtTime(0.35, now);
+
+      const echoGain = ctx.createGain();
+      echoGain.gain.setValueAtTime(0.35, now);
+
+      gain.connect(echoDelay);
+      echoDelay.connect(echoGain);
+      echoGain.connect(ctx.destination);
+    } catch (err) {
+      // Fail silently
+    }
+  }
+
+  // Synthesize short physical click on manual compass bezel rotation
+  public static playDialClick() {
+    try {
+      const ctx = this.getContext();
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(1300, now);
+
+      gain.gain.setValueAtTime(0.045, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.015);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(now);
+      osc.stop(now + 0.015);
+    } catch (err) {
+      // Fail silently
+    }
+  }
+
+  // Synthesize success chime when magnetic needle aligns with Silva orienting arrow
+  public static playLockChime() {
+    try {
+      const ctx = this.getContext();
+      const now = ctx.currentTime;
+      const playBell = (freq: number, volume: number) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, now);
+        
+        gain.gain.setValueAtTime(volume, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.26);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(now);
+        osc.stop(now + 0.26);
+      };
+
+      playBell(880, 0.07);
+      playBell(1320, 0.035);
+    } catch (err) {
+      // Fail silently
+    }
+  }
+
+  // Synthesize athletic grunt and woody scrape sounds during hurdles/vaulting
+  public static playVault() {
+    try {
+      const ctx = this.getContext();
+      const now = ctx.currentTime;
+
+      // 1. Scrape brush scrape friction
+      const scrape = ctx.createBufferSource();
+      scrape.buffer = this.getNoiseBuffer(ctx);
+      const scrapeFilter = ctx.createBiquadFilter();
+      scrapeFilter.type = 'bandpass';
+      scrapeFilter.frequency.setValueAtTime(1000, now);
+      scrapeFilter.Q.setValueAtTime(2.0, now);
+
+      const scrapeGain = ctx.createGain();
+      scrapeGain.gain.setValueAtTime(0.035, now);
+      scrapeGain.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+
+      scrape.connect(scrapeFilter);
+      scrapeFilter.connect(scrapeGain);
+      scrapeGain.connect(ctx.destination);
+      scrape.start(now);
+      scrape.stop(now + 0.32);
+
+      // 2. Vocal effort grunt (descending sawtooth with lowpass)
+      const grunt = ctx.createOscillator();
+      grunt.type = 'sawtooth';
+      grunt.frequency.setValueAtTime(95, now);
+      grunt.frequency.exponentialRampToValueAtTime(70, now + 0.24);
+
+      const gruntFilter = ctx.createBiquadFilter();
+      gruntFilter.type = 'lowpass';
+      gruntFilter.frequency.setValueAtTime(150, now);
+
+      const gruntGain = ctx.createGain();
+      gruntGain.gain.setValueAtTime(0.06, now);
+      gruntGain.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+
+      grunt.connect(gruntFilter);
+      gruntFilter.connect(gruntGain);
+      gruntGain.connect(ctx.destination);
+
+      grunt.start(now);
+      grunt.stop(now + 0.24);
+    } catch (err) {
+      // Fail silently
+    }
+  }
+
+  // Synthesize gravel/soil sliding friction noise
+  public static playSlideScrape() {
+    try {
+      const ctx = this.getContext();
+      const now = ctx.currentTime;
+
+      const scrape = ctx.createBufferSource();
+      scrape.buffer = this.getNoiseBuffer(ctx);
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(750 + Math.random() * 400, now);
+      filter.Q.setValueAtTime(1.6, now);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.038, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+
+      scrape.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+
+      scrape.start(now);
+      scrape.stop(now + 0.12);
+    } catch (err) {
+      // Fail silently
+    }
+  }
 }
+

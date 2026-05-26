@@ -48,6 +48,18 @@ export class Controls {
 
   // Flight Mode
   public isFlightMode = false;
+  public isRaining = false;
+
+  // Maturity Realism properties
+  private bobTimer = 0.0;
+  private stepTimer = 0.0;
+
+  // Tactical simulation states
+  public isVaulting = false;
+  public vaultTimer = 0.0;
+  private vaultSpeedBoost = 1.0;
+  public isSliding = false;
+  private slideScrapeCooldown = 0.0;
 
   constructor(camera: THREE.PerspectiveCamera, domElement: HTMLElement, terrain: CollidableTerrain) {
     this.camera = camera;
@@ -171,6 +183,13 @@ export class Controls {
     if (this.slipTimer > 0) {
       this.slipTimer -= delta;
     }
+    if (this.vaultTimer > 0) {
+      this.vaultTimer -= delta;
+      if (this.vaultTimer <= 0) {
+        this.isVaulting = false;
+        this.vaultSpeedBoost = 1.0;
+      }
+    }
 
     // --- 1. GET RUNNABILITY SPEED MULTIPLIER ---
     const currentTerrainType = this.terrain.getTerrainType(this.position.x, this.position.z);
@@ -266,7 +285,7 @@ export class Controls {
       speedMultiplier *= 0.3;
     }
 
-    const currentSpeed = this.runSpeed * speedMultiplier;
+    const currentSpeed = this.runSpeed * speedMultiplier * this.vaultSpeedBoost;
 
     // --- 2. CALCULATE INPUT DIRECTION ---
     const moveDirection = new THREE.Vector3(0, 0, 0);
@@ -334,9 +353,34 @@ export class Controls {
       if (!this.isGrounded) {
         this.velocity.y -= this.gravity * delta;
       } else if (this.keys.Space) {
-        // Jump trigger
-        this.velocity.y = this.jumpStrength;
-        this.isGrounded = false;
+        // Vault check: Check if there's a low obstacle (stone wall, boulder, hedge) to vault over!
+        const speed = new THREE.Vector2(this.velocity.x, this.velocity.z).length();
+        let vaulted = false;
+        
+        if (speed > 4.5 && this.isGrounded && !this.isSwimming && !this.isFlightMode) {
+          const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.rotation.y);
+          const checkX = this.position.x + forward.x * 1.4;
+          const checkZ = this.position.z + forward.z * 1.4;
+          const forwardHeight = this.terrain.getTerrainHeight(checkX, checkZ);
+          const fHeightDiff = forwardHeight - this.position.y;
+          
+          if (fHeightDiff >= 0.45 && fHeightDiff <= 1.25) {
+            // Trigger physical hurdle vault!
+            this.isVaulting = true;
+            this.vaultTimer = 0.45;
+            this.vaultSpeedBoost = 1.35;
+            this.velocity.y = 5.2; // smaller upward launch
+            this.isGrounded = false;
+            Sound.playVault();
+            vaulted = true;
+          }
+        }
+        
+        if (!vaulted) {
+          // Standard jump trigger
+          this.velocity.y = this.jumpStrength;
+          this.isGrounded = false;
+        }
       }
     }
 
@@ -368,14 +412,38 @@ export class Controls {
         this.position.y += heightDiff * 0.8;
       }
 
-      // Slope slipping check (descending slope slips)
-      if (this.isGrounded && !this.isSwimming && !this.isFlightMode && this.slipTimer <= 0.0) {
-        if (heightDiff < -0.8 && isMoving && !this.keys.ShiftLeft) {
-          // 10% chance per second of slipping on steep declines
-          const slipChance = 0.10 * delta;
-          if (Math.random() < slipChance) {
-            this.slipTimer = 0.6; // stumble!
-            Sound.playError(); // trigger stumble buzz
+      // Slope slipping & sliding check (descending slope slides)
+      if (this.isGrounded && !this.isSwimming && !this.isFlightMode) {
+        if (this.isSliding) {
+          // If already sliding, check if we reached flatter ground
+          if (heightDiff >= -0.6) {
+            this.isSliding = false;
+            this.slipTimer = 0.45; // brief landing recovery slowdown
+          } else {
+            // Apply downhill sliding force: override velocity
+            const slideSpeed = 16.5;
+            this.velocity.x = rotatedMove.x * slideSpeed;
+            this.velocity.z = rotatedMove.z * slideSpeed;
+
+            // Tick sliding scrapings
+            this.slideScrapeCooldown -= delta;
+            if (this.slideScrapeCooldown <= 0) {
+              Sound.playSlideScrape();
+              this.slideScrapeCooldown = 0.08 + Math.random() * 0.04;
+            }
+          }
+        } else if (this.slipTimer <= 0.0) {
+          if (heightDiff < -1.1 && isMoving && !this.keys.ShiftLeft) {
+            // Enter Sliding state!
+            this.isSliding = true;
+            this.slideScrapeCooldown = 0.0;
+          } else if (heightDiff < -0.8 && isMoving && !this.keys.ShiftLeft) {
+            // 10% chance per second (or 30% if raining) of slipping on steep declines
+            const slipChance = (this.isRaining ? 0.30 : 0.10) * delta;
+            if (Math.random() < slipChance) {
+              this.slipTimer = 0.6; // stumble!
+              Sound.playError(); // trigger stumble buzz
+            }
           }
         }
       }
@@ -410,6 +478,71 @@ export class Controls {
     // View height offset (eye-level at 1.6m, except when swimming)
     const eyeHeight = this.isSwimming ? 0.6 : 1.6;
     this.camera.position.copy(this.position).y += eyeHeight;
+
+    // Apply vaulting vertical dip/rise arc
+    if (this.isVaulting && this.vaultTimer > 0) {
+      const progress = (0.45 - this.vaultTimer) / 0.45;
+      const vaultHeight = Math.sin(progress * Math.PI) * 0.45 - Math.cos(progress * Math.PI * 2) * 0.16;
+      this.camera.position.y += vaultHeight;
+    }
+
+    // --- MATURITY REALISM: HEAD-BOB, CHEST HEAVE & FOOTSTEP AUDIO ---
+    const horizontalVel = new THREE.Vector2(this.velocity.x, this.velocity.z);
+    const horizontalSpeed = horizontalVel.length();
+    const isPhysMoving = horizontalSpeed > 0.15;
+
+    // 1. Rhythmic Footsteps Trigger
+    if (isPhysMoving && this.isGrounded && !this.isSwimming) {
+      this.stepTimer += delta * horizontalSpeed;
+      const stepInterval = this.keys.ShiftLeft ? 1.9 : 1.15; // spacing in meters
+      if (this.stepTimer >= stepInterval) {
+        this.stepTimer = 0.0;
+        Sound.playStep(currentTerrainType, this.getSpeedFactor());
+      }
+    } else {
+      this.stepTimer = 0.0;
+    }
+
+    // 2. Camera Head-Bobbing
+    if (isPhysMoving && this.isGrounded && !this.isSwimming) {
+      const stepFrequency = this.keys.ShiftLeft ? 9.5 : (this.stamina < 30.0 ? 15.0 : 13.0);
+      this.bobTimer += delta * stepFrequency;
+
+      const speedRatio = horizontalSpeed / this.runSpeed;
+      const bobAmtY = Math.sin(this.bobTimer) * 0.065 * speedRatio;
+      const bobAmtX = Math.cos(this.bobTimer * 0.5) * 0.03 * speedRatio;
+
+      this.camera.position.y += bobAmtY;
+      this.camera.position.x += bobAmtX;
+    } else {
+      this.bobTimer = 0.0;
+    }
+
+    // 3. Heaving Chest Breathing Sway
+    const breatheSway = Math.sin(Date.now() * 0.003) * 0.045 * (1.0 - this.stamina / 100.0);
+    this.camera.position.y += breatheSway;
+
+    // Sync baseline rotation
     this.camera.quaternion.setFromEuler(this.rotation);
+
+    // Apply vaulting forward camera rotation dip
+    if (this.isVaulting && this.vaultTimer > 0) {
+      const progress = (0.45 - this.vaultTimer) / 0.45;
+      this.camera.rotation.x += Math.sin(progress * Math.PI) * 0.14;
+    }
+
+    // 4. Apply camera rolls & shaky eyes rotations after base sync
+    if (isPhysMoving && this.isGrounded && !this.isSwimming) {
+      const speedRatio = horizontalSpeed / this.runSpeed;
+      const bobAmtX = Math.cos(this.bobTimer * 0.5) * 0.03 * speedRatio;
+      this.camera.rotation.z += bobAmtX * 0.45; // camera roll tilt
+    }
+
+    if (this.isExhausted) {
+      const fatigueFactor = 1.0 - this.stamina / 35.0;
+      const shakeAmt = 0.0015 * fatigueFactor;
+      this.camera.rotation.x += (Math.random() - 0.5) * shakeAmt;
+      this.camera.rotation.y += (Math.random() - 0.5) * shakeAmt;
+    }
   }
 }

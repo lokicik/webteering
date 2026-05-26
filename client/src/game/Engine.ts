@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { Sound } from '../ui/Sound';
 
 export interface Updatable {
   update(delta: number): void;
@@ -15,6 +16,18 @@ export class Engine {
   // Lights
   private ambientLight!: THREE.AmbientLight;
   private sunLight!: THREE.DirectionalLight;
+
+  // Weather Realism systems
+  private rainActive = false;
+  private rainMesh: THREE.LineSegments | null = null;
+  private rainGeometry!: THREE.BufferGeometry;
+  private rainPositions!: Float32Array;
+
+  private lightningIntensity = 0.0;
+  private lightningChance = 0.0018; // probability per frame
+  private baseAmbientIntensity = 0.6;
+  private baseSunIntensity = 0.8;
+  private baseBgColor = new THREE.Color(0x7ec0ee);
 
   constructor(containerId: string) {
     this.container = document.getElementById(containerId) as HTMLElement;
@@ -158,6 +171,13 @@ export class Engine {
         }
         break;
     }
+
+    // Cache weather bases
+    this.baseAmbientIntensity = this.ambientLight.intensity;
+    this.baseSunIntensity = this.sunLight.intensity;
+    if (this.scene.background) {
+      this.baseBgColor.copy(this.scene.background as THREE.Color);
+    }
   }
 
   public setFogDensity(percentage: number) {
@@ -165,6 +185,125 @@ export class Engine {
     if (fog) {
       // Map 0-100 percentage to 0.002 (clear) - 0.08 (blinding fog)
       fog.density = 0.002 + (percentage / 100) * 0.078;
+    }
+  }
+
+  // Create or destroy dynamic falling instanced rain needles
+  public setRainActive(active: boolean) {
+    this.rainActive = active;
+    
+    if (active) {
+      if (this.rainMesh) return;
+      
+      const vertexCount = 1200; // dense rain needles box
+      this.rainGeometry = new THREE.BufferGeometry();
+      this.rainPositions = new Float32Array(vertexCount * 3 * 2);
+      
+      for (let i = 0; i < vertexCount; i++) {
+        const rx = (Math.random() - 0.5) * 45;
+        const ry = Math.random() * 32;
+        const rz = (Math.random() - 0.5) * 45;
+        
+        const idx = i * 6;
+        this.rainPositions[idx] = rx;
+        this.rainPositions[idx+1] = ry;
+        this.rainPositions[idx+2] = rz;
+        
+        this.rainPositions[idx+3] = rx;
+        this.rainPositions[idx+4] = ry - 0.8; // needle streak length
+        this.rainPositions[idx+5] = rz;
+      }
+      
+      this.rainGeometry.setAttribute('position', new THREE.BufferAttribute(this.rainPositions, 3));
+      
+      const rainMaterial = new THREE.LineBasicMaterial({
+        color: 0x88aacc,
+        transparent: true,
+        opacity: 0.55,
+        depthWrite: false
+      });
+      
+      this.rainMesh = new THREE.LineSegments(this.rainGeometry, rainMaterial);
+      this.scene.add(this.rainMesh);
+    } else {
+      if (!this.rainMesh) return;
+      this.scene.remove(this.rainMesh);
+      this.rainGeometry.dispose();
+      (this.rainMesh.material as THREE.Material).dispose();
+      this.rainMesh = null;
+    }
+  }
+
+  // Fall rain box around player and trigger random lightning flash/thunders
+  private updateWeather(delta: number) {
+    if (this.rainActive && this.rainMesh) {
+      // Center rain box on player camera position
+      this.rainMesh.position.set(this.camera.position.x, 0, this.camera.position.z);
+      
+      const posAttr = this.rainGeometry.getAttribute('position') as THREE.BufferAttribute;
+      const array = posAttr.array as Float32Array;
+      const count = posAttr.count / 2; // number of needles
+      
+      for (let i = 0; i < count; i++) {
+        const idx = i * 6;
+        
+        // Falling motion
+        array[idx+1] -= 22 * delta;
+        array[idx+4] -= 22 * delta;
+        
+        // Reset top if falls below ground
+        if (array[idx+1] < 0) {
+          const rx = (Math.random() - 0.5) * 45;
+          const ry = 30 + Math.random() * 5;
+          const rz = (Math.random() - 0.5) * 45;
+          
+          array[idx] = rx;
+          array[idx+1] = ry;
+          array[idx+2] = rz;
+          
+          array[idx+3] = rx;
+          array[idx+4] = ry - 0.8;
+          array[idx+5] = rz;
+        }
+      }
+      posAttr.needsUpdate = true;
+
+      // 2. Storm Lightning Flash Simulation
+      if (this.lightningIntensity <= 0.0) {
+        if (Math.random() < this.lightningChance) {
+          this.lightningIntensity = 1.0;
+          Sound.playThunder();
+        }
+      } else {
+        this.lightningIntensity -= delta * 3.8; // rapid flash decay
+        if (this.lightningIntensity < 0.0) {
+          this.lightningIntensity = 0.0;
+        }
+        
+        const flashVal = this.lightningIntensity;
+        this.ambientLight.intensity = this.baseAmbientIntensity + flashVal * 2.8;
+        this.sunLight.intensity = this.baseSunIntensity + flashVal * 2.5;
+        
+        const skyColor = new THREE.Color().lerpColors(this.baseBgColor, new THREE.Color(0xffffff), flashVal * 0.85);
+        this.scene.background = skyColor;
+        
+        const fog = this.scene.fog as THREE.FogExp2;
+        if (fog) {
+          fog.color.copy(skyColor);
+        }
+      }
+    } else {
+      // Reset if rain got disabled during a flash
+      if (this.lightningIntensity > 0.0) {
+        this.lightningIntensity = 0.0;
+        this.ambientLight.intensity = this.baseAmbientIntensity;
+        this.sunLight.intensity = this.baseSunIntensity;
+        this.scene.background = this.baseBgColor;
+        const fog = this.scene.fog as THREE.FogExp2;
+        if (fog) {
+          fog.color.copy(this.baseBgColor);
+        }
+      }
     }
   }
 
@@ -180,6 +319,9 @@ export class Engine {
       for (const item of this.updatables) {
         item.update(delta);
       }
+
+      // Animate falling rain box and thunder cracks
+      this.updateWeather(delta);
 
       this.renderer.render(this.scene, this.camera);
     };
