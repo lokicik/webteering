@@ -57,9 +57,11 @@
           </div>
           
           <!-- Mode Select Shortcuts -->
-          <div class="mode-shortcuts">
+          <div class="mode-shortcuts" style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
             <button id="btn-tutorial-start" class="btn btn-secondary glow-hover">Run Tutorial</button>
             <button id="btn-freeplay-start" class="btn btn-accent glow-hover">Freeplay Sandbox</button>
+            <button id="btn-relax-start" class="btn btn-primary glow-hover" style="grid-column: 1 / span 2; margin-top: 4px;">Blind Search Mode 🧭</button>
+            <button id="btn-open-guide" class="btn btn-secondary glow-hover" style="grid-column: 1 / span 2; margin-top: 4px;">Orienteering Guide 📖</button>
           </div>
         </div>
 
@@ -77,6 +79,52 @@
             <input type="text" id="new-room-id" placeholder="room-code" maxlength="8">
             <button id="btn-create-room" class="btn btn-primary">Create Room</button>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Orienteering Rules & Manual Guide Drawer -->
+  <div id="guide-drawer" class="overlay hidden" style="z-index: 10;">
+    <div class="glass-panel guide-panel">
+      <div class="guide-header">
+        <h2>Rules of Orienteering</h2>
+        <button id="btn-close-guide" class="map-close-btn">&times;</button>
+      </div>
+      <div class="guide-content">
+        <div class="guide-section">
+          <h3>1. Voxel Wilderness Navigation</h3>
+          <p>Welcome to <b>Webteering</b>! Orienteering is a tactical sport where you must navigate to a series of checkpoints (flags) in the exact numerical sequence using only a topographic map and a magnetic compass.</p>
+          <p>Move with <b>WASD</b>, look with your <b>Mouse</b>, and press <b>E</b> to punch checkpoints when standing near them.</p>
+        </div>
+        <div class="guide-section">
+          <h3>2. The Topographic Map (ISOM Legends)</h3>
+          <p>The map uses standard international orienteering color codes:</p>
+          <div class="guide-symbols-grid">
+            <div class="symbol-card"><span class="symbol-color-dot" style="background:#ffdd00;"></span><b>Yellow Fields</b><br>Open terrain, fast.</div>
+            <div class="symbol-card"><span class="symbol-color-dot" style="background:#ffffff;"></span><b>White Forest</b><br>Clean runnable forest.</div>
+            <div class="symbol-card"><span class="symbol-color-dot" style="background:#d0f0d0;"></span><b>Light Green</b><br>Light foliage, slow.</div>
+            <div class="symbol-card"><span class="symbol-color-dot" style="background:#60c060;"></span><b>Medium Green</b><br>Dense forest, drag.</div>
+            <div class="symbol-card"><span class="symbol-color-dot" style="background:#00a0f0;"></span><b>Blue Lakes</b><br>Deep water, swim.</div>
+            <div class="symbol-card"><span class="symbol-color-dot" style="background:#a06020;"></span><b>Brown Paths</b><br>Gravel path, boost.</div>
+          </div>
+          <p><b>Contour Lines:</b> The brown loops represent changes in elevation. The closer the loops are to each other, the steeper the voxel hill slope!</p>
+        </div>
+        <div class="guide-section">
+          <h3>3. Realism Controls & Compass</h3>
+          <p><b>Compass Needle Wobble:</b> Running fast or jumping causes the magnetic needle to oscillate and swing violently due to lateral physical momentum. To take precise bearings, you must **slow down to a walk or stand still**!</p>
+          <p><b>Map Speed Penalty:</b> Reading a map while running limits your focus. Opening the map panel (<b>M</b> key) applies an immediate **15% speed penalty**.</p>
+          <p><b>Map Rotation Modes:</b>
+            <ul>
+              <li><b>North-Up:</b> Map remains static.</li>
+              <li><b>Heading-Up:</b> Map automatically rotates in reverse to match your camera direction.</li>
+              <li><b>Manual Mode:</b> Use <b>Q</b> and <b>R</b> keys to rotate the map sheet manually in your hands!</li>
+            </ul>
+          </p>
+        </div>
+        <div class="guide-section">
+          <h3>4. E-Card Punching & Splits</h3>
+          <p>Checkpoints are marked as red circles on the map. Stand within 3 meters and press <b>E</b> to stamp your electronic SportIdent e-card. Out-of-order punches trigger an error buzzer. Your splits and post-race paths are tracked for final review!</p>
         </div>
       </div>
     </div>
@@ -113,6 +161,8 @@
       <div id="stamina-bar-container" class="hidden">
         <div id="stamina-bar-fill"></div>
       </div>
+      <!-- Blind Search Header Banner -->
+      <div id="relaxed-mode-banner" class="hidden" style="color: #00ccff; font-family: var(--font-mono); font-size: 0.75rem; font-weight: bold; letter-spacing: 1px; margin-top: 6px;">BLIND SEARCH - GPS DISABLED</div>
     </div>
 
     <!-- Active Checkpoint & E-Card Punch List -->
@@ -234,21 +284,33 @@
   <div id="podium-screen" class="overlay hidden">
     <div class="glass-panel podium-panel text-center">
       <h2 class="glow">RACE COMPLETED!</h2>
-      <div class="podium-results">
-        <table class="scoreboard-table">
-          <thead>
-            <tr>
-              <th>Rank</th>
-              <th>Runner</th>
-              <th>Checkpoints</th>
-              <th>Race Time</th>
-            </tr>
-          </thead>
-          <tbody id="podium-tbody">
-            <!-- Dynamically populated -->
-          </tbody>
-        </table>
+      
+      <div class="podium-results-container">
+        <div class="podium-results">
+          <table class="scoreboard-table">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Runner</th>
+                <th>Checkpoints</th>
+                <th>Race Time</th>
+              </tr>
+            </thead>
+            <tbody id="podium-tbody">
+              <!-- Dynamically populated -->
+            </tbody>
+          </table>
+        </div>
+        
+        <div class="podium-map-wrapper">
+          <h3>Post-Race Route Analysis</h3>
+          <canvas id="podium-map-canvas" width="300" height="300"></canvas>
+          <div id="podium-map-legend" class="podium-legend">
+            <!-- Dynamically populated legend dots -->
+          </div>
+        </div>
       </div>
+      
       <button id="btn-podium-close" class="btn btn-primary" style="margin-top:20px;">Return to Lobby</button>
     </div>
   </div>

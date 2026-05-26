@@ -31,6 +31,7 @@ export class Controls {
   private isGrounded = false;
   private runSpeed = 8.5; // Base running speed
   private isSwimming = false;
+  private wasSwimming = false;
   private stunTimer = 0.0;
 
   // Polish & Realism Upgrades
@@ -199,6 +200,12 @@ export class Controls {
       default:
         speedMultiplier = 1.0;
     }
+
+    // Play swimming splash sound on transition
+    if (this.isSwimming && !this.wasSwimming) {
+      Sound.playSplash();
+    }
+    this.wasSwimming = this.isSwimming;
 
     // --- REALISTIC STAMINA & FATIGUE SYSTEM ---
     const staminaMoveDirection = new THREE.Vector3(0, 0, 0);

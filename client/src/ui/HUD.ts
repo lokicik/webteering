@@ -31,6 +31,7 @@ export class HUD {
   // Realistic map rotation parameters
   public mapMode: 'north' | 'heading' | 'manual' = 'north';
   public manualMapAngle = 0.0;
+  public forceHideGps = false;
 
   constructor() {
     this.mapCtx = this.mapCanvas.getContext('2d')!;
@@ -176,11 +177,21 @@ export class HUD {
         const gz = z - half;
         const type = terrain.getTerrainType(gx, gz);
         
+        const h = terrain.getTerrainHeight(gx, gz);
+        
         // Parse hex color string to RGB channels
         const hex = colors[type] || '#ffffff';
-        const r = parseInt(hex.slice(1, 3), 16);
-        const g = parseInt(hex.slice(3, 5), 16);
-        const b = parseInt(hex.slice(5, 7), 16);
+        let r = parseInt(hex.slice(1, 3), 16);
+        let g = parseInt(hex.slice(3, 5), 16);
+        let b = parseInt(hex.slice(5, 7), 16);
+
+        // Apply hypsometric elevation shading (darker/cooler at valley lowlands, lighter/warmer at mountain peaks)
+        if (type !== 'water') {
+          const heightFactor = Math.max(0.0, Math.min(1.0, h / 14.0)); // Heights scale from 0 to 14 units
+          r = Math.max(0, Math.min(255, Math.round(r * (0.82 + heightFactor * 0.32))));
+          g = Math.max(0, Math.min(255, Math.round(g * (0.82 + heightFactor * 0.18))));
+          b = Math.max(0, Math.min(255, Math.round(b * (0.72 + heightFactor * 0.28))));
+        }
         
         const idx = (z * size + x) * 4;
         imgData.data[idx] = r;
@@ -316,7 +327,7 @@ export class HUD {
     }
 
     // Draw local player GPS marker
-    if (this.gpsEnabled) {
+    if (this.gpsEnabled && !this.forceHideGps) {
       const px = playerX + half;
       const pz = playerZ + half;
 
@@ -365,9 +376,11 @@ export class HUD {
       
       const isFinish = (idx === course.length - 1);
       const codeName = isFinish ? 'Finish' : `CP ${idx + 1}`;
+      const picto = this.getPictogramSVG(cp.description);
 
       row.innerHTML = `
         <span class="punch-lbl">${codeName}</span>
+        <span class="punch-picto" title="${cp.description}">${picto}</span>
         <span class="punch-code">[${cp.code}]</span>
         <span class="punch-time">${isPunched ? 'Stamped' : isActive ? 'Active' : 'Locked'}</span>
       `;
@@ -466,5 +479,83 @@ export class HUD {
     this.alertTimeout = setTimeout(() => {
       this.punchAlert.classList.add('hidden');
     }, 2500);
+  }
+
+  private getPictogramSVG(description: string): string {
+    const desc = description.toLowerCase();
+    
+    // SVG wrapper template with custom sizes
+    const svgHeader = '<svg viewBox="0 0 24 24" width="16" height="16" style="vertical-align: middle; stroke: currentColor; fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round;">';
+    
+    if (desc.includes('finish')) {
+      // Concentric circles (Double circles)
+      return svgHeader + '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/></svg>';
+    } else if (desc.includes('boulder')) {
+      // Hexagon block
+      return svgHeader + '<polygon points="12,3 20,7.5 20,16.5 12,21 4,16.5 4,7.5"/></svg>';
+    } else if (desc.includes('depression')) {
+      // Concentric dashed circles
+      return svgHeader + '<circle cx="12" cy="12" r="8" stroke-dasharray="2 2"/><circle cx="12" cy="12" r="4" stroke-dasharray="1 1"/></svg>';
+    } else if (desc.includes('gully')) {
+      // V shape
+      return svgHeader + '<polyline points="3,6 12,18 21,6"/></svg>';
+    } else if (desc.includes('spur')) {
+      // Contour nose curve
+      return svgHeader + '<path d="M6,6 C16,6 16,18 6,18"/></svg>';
+    } else if (desc.includes('thicket')) {
+      // Triple circular vegetation clusters
+      return svgHeader + '<circle cx="8" cy="14" r="3"/><circle cx="16" cy="14" r="3"/><circle cx="12" cy="8" r="3"/></svg>';
+    } else if (desc.includes('wall')) {
+      // Hatching block lines representing rock barrier wall
+      return svgHeader + '<line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><line x1="8" y1="8" x2="8" y2="16"/><line x1="16" y1="8" x2="16" y2="16"/></svg>';
+    } else if (desc.includes('hill')) {
+      // Double circular contours
+      return svgHeader + '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="5"/></svg>';
+    }
+    
+    // Default fallback: checkpoint flag stand
+    return svgHeader + '<rect x="6" y="4" width="12" height="12"/><line x1="6" y1="16" x2="6" y2="20"/></svg>';
+  }
+
+  public drawTracksOnCanvas(
+    canvas: HTMLCanvasElement,
+    paths: { [id: string]: { x: number; z: number }[] },
+    players: { [id: string]: { name: string; skinColor: string } }
+  ) {
+    const size = this.offscreenMapCanvas.width || canvas.width;
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d')!;
+    
+    // Draw static pre-rendered background map
+    ctx.drawImage(this.offscreenMapCanvas, 0, 0);
+
+    const half = size / 2;
+
+    // Draw tracks in glowing neon colored lines
+    for (const pid in paths) {
+      const path = paths[pid];
+      if (path.length < 2) continue;
+
+      const playerInfo = players[pid] || { name: 'Runner', skinColor: '#00ccff' };
+      
+      ctx.save();
+      ctx.strokeStyle = playerInfo.skinColor;
+      ctx.lineWidth = 3.0;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      
+      // Glowing line shadow effect
+      ctx.shadowColor = playerInfo.skinColor;
+      ctx.shadowBlur = 6;
+
+      ctx.beginPath();
+      ctx.moveTo(path[0].x + half, path[0].z + half);
+      for (let i = 1; i < path.length; i++) {
+        ctx.lineTo(path[i].x + half, path[i].z + half);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 }

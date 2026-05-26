@@ -27,6 +27,19 @@ class WebteeringApp {
   private isFreeplay = false;
   private headlamp: THREE.SpotLight | null = null;
 
+  // Advanced Upgrades tracking
+  private playerPaths: { [id: string]: { x: number; z: number }[] } = {};
+  private pathRecordTimer = 0.0;
+  
+  // Blind Search Mode (Relaxed Mode)
+  private isRelaxed = false;
+  private relaxedStartTime = 0;
+  private activeCourse: Checkpoint[] = [];
+  private relaxedPunchedCps: number[] = [];
+  
+  // Dynamic audio synthesiser timer
+  private breathingTimer = 0.0;
+
   constructor() {
     this.initCore();
     this.initLobbyUI();
@@ -165,8 +178,34 @@ class WebteeringApp {
         // Return to waiting room screen
         document.getElementById('room-wait-screen')?.classList.remove('hidden');
       } else {
-        document.getElementById('lobby-screen')?.classList.remove('hidden');
+        if (this.isRelaxed) {
+          this.exitRelaxedMode();
+        } else {
+          document.getElementById('lobby-screen')?.classList.remove('hidden');
+        }
       }
+    });
+
+    // In-game Rules & Manual guide toggles
+    const btnOpenGuide = document.getElementById('btn-open-guide');
+    const btnCloseGuide = document.getElementById('btn-close-guide');
+    const guideDrawer = document.getElementById('guide-drawer');
+
+    if (btnOpenGuide && guideDrawer) {
+      btnOpenGuide.addEventListener('click', () => {
+        guideDrawer.classList.remove('hidden');
+      });
+    }
+    if (btnCloseGuide && guideDrawer) {
+      btnCloseGuide.addEventListener('click', () => {
+        guideDrawer.classList.add('hidden');
+      });
+    }
+
+    // Blind Search button trigger
+    const btnRelaxStart = document.getElementById('btn-relax-start');
+    btnRelaxStart?.addEventListener('click', () => {
+      this.startRelaxedMode();
     });
 
     // Lobby network callbacks
@@ -276,6 +315,9 @@ class WebteeringApp {
       // Lock mouse cursor to start racing!
       this.controls.lock();
 
+      // Start forest wind ambience
+      Sound.startWindAmbience();
+
       // 2. Load 3D Terrain on demand if not loaded or matching seed
       this.reloadTerrainAndCourse(this.roomState.mapSeed, this.roomState.course);
 
@@ -291,6 +333,11 @@ class WebteeringApp {
   }
 
   private reloadTerrainAndCourse(seed: number, course: Checkpoint[]) {
+    // Reset path recordings
+    this.playerPaths = {};
+    this.pathRecordTimer = 0;
+    this.activeCourse = course;
+
     // Regenerate heightfield meshes
     this.terrain = new Terrain(this.engine.scene, seed);
     this.terrain.generateTerrainMeshes();
@@ -335,41 +382,100 @@ class WebteeringApp {
   }
 
   private showScoreboardSummary() {
-    if (!this.roomState) return;
+    if (!this.roomState && !this.isRelaxed) return;
 
     this.controls.unlock();
     
+    Sound.stopWindAmbience();
+    
     document.getElementById('hud-container')?.classList.add('hidden');
     document.getElementById('stamina-bar-container')?.classList.add('hidden');
+    document.getElementById('relaxed-mode-banner')?.classList.add('hidden');
     document.getElementById('podium-screen')?.classList.remove('hidden');
+
+    // Render post-race paths on podium canvas
+    const canvas = document.getElementById('podium-map-canvas') as HTMLCanvasElement;
+    if (canvas && this.terrain) {
+      const playersMapping: { [id: string]: { name: string; skinColor: string } } = {};
+      
+      // Map local player details
+      const localId = this.localPlayerId || 'local';
+      const nameInput = document.getElementById('player-name') as HTMLInputElement;
+      const activeColorBtn = document.querySelector('.color-btn.active') as HTMLElement;
+      const localColor = activeColorBtn?.dataset.color || '#ff3333';
+      playersMapping[localId] = {
+        name: nameInput?.value || 'You',
+        skinColor: localColor
+      };
+
+      // Map other runners details
+      if (this.roomState) {
+        for (const pid in this.roomState.players) {
+          const p = this.roomState.players[pid];
+          playersMapping[pid] = {
+            name: p.name,
+            skinColor: p.skinColor
+          };
+        }
+      }
+
+      this.hud.drawTracksOnCanvas(canvas, this.playerPaths, playersMapping);
+      
+      // Dynamically populate map legend in podium panel
+      const legendEl = document.getElementById('podium-map-legend');
+      if (legendEl) {
+        legendEl.innerHTML = '';
+        for (const pid in this.playerPaths) {
+          const info = playersMapping[pid] || { name: 'Runner', skinColor: '#00ccff' };
+          const legendItem = document.createElement('span');
+          legendItem.className = 'legend-item';
+          legendItem.innerHTML = `<span class="legend-dot" style="background:${info.skinColor}; display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:4px;"></span>${info.name}`;
+          legendEl.appendChild(legendItem);
+        }
+      }
+    }
 
     const tbody = document.getElementById('podium-tbody') as HTMLElement;
     tbody.innerHTML = '';
 
-    // Sort finished lists
-    const sorted = Object.values(this.roomState.scoreboard).sort((a, b) => {
-      if (a.finished && b.finished) return a.elapsed - b.elapsed;
-      if (a.finished) return -1;
-      if (b.finished) return 1;
-      return b.splits.length - a.splits.length;
-    });
+    if (this.roomState) {
+      // Sort finished lists
+      const sorted = Object.values(this.roomState.scoreboard).sort((a, b) => {
+        if (a.finished && b.finished) return a.elapsed - b.elapsed;
+        if (a.finished) return -1;
+        if (b.finished) return 1;
+        return b.splits.length - a.splits.length;
+      });
 
-    sorted.forEach((entry, idx) => {
+      sorted.forEach((entry, idx) => {
+        const tr = document.createElement('tr');
+        const isMe = (entry.id === this.localPlayerId);
+        if (isMe) tr.className = 'is-me-row';
+
+        const timeStr = entry.finished ? this.hud.formatTime(entry.elapsed) : 'DID NOT FINISH';
+        const count = `${entry.splits.length} / ${this.roomState!.course.length}`;
+
+        tr.innerHTML = `
+          <td class="rank-cell">#${idx + 1}</td>
+          <td style="font-weight:${isMe ? 'bold':'normal'}">${entry.name}</td>
+          <td>${count}</td>
+          <td style="font-family:var(--font-mono); font-weight:bold;">${timeStr}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    } else {
+      // Single-player Relaxed mode result
       const tr = document.createElement('tr');
-      const isMe = (entry.id === this.localPlayerId);
-      if (isMe) tr.className = 'is-me-row';
-
-      const timeStr = entry.finished ? this.hud.formatTime(entry.elapsed) : 'DID NOT FINISH';
-      const count = `${entry.splits.length} / ${this.roomState!.course.length}`;
-
+      tr.className = 'is-me-row';
+      const nameInput = document.getElementById('player-name') as HTMLInputElement;
       tr.innerHTML = `
-        <td class="rank-cell">#${idx + 1}</td>
-        <td style="font-weight:${isMe ? 'bold':'normal'}">${entry.name}</td>
-        <td>${count}</td>
-        <td style="font-family:var(--font-mono); font-weight:bold;">${timeStr}</td>
+        <td class="rank-cell">#1</td>
+        <td style="font-weight:bold">${nameInput?.value || 'You'}</td>
+        <td>1 / 1</td>
+        <td style="font-family:var(--font-mono); font-weight:bold;">COMPLETED 🧭</td>
       `;
       tbody.appendChild(tr);
-    });
+    }
   }
 
   // --- GAME MODE: INTERACTIVE TUTORIAL STATE MACHINE ---
@@ -395,6 +501,9 @@ class WebteeringApp {
     // Trigger full assets pre-load
     this.reloadTerrainAndCourse(101, course);
     this.hud.updateECard(course, []);
+
+    // Start wind ambience
+    Sound.startWindAmbience();
 
     // Snap to starting position
     const startHeight = this.terrain.getTerrainHeight(0, 0);
@@ -483,8 +592,11 @@ class WebteeringApp {
     this.controls.unlock();
     this.elements.clearStaticEntities();
 
+    Sound.stopWindAmbience();
+
     document.getElementById('hud-container')?.classList.add('hidden');
     document.getElementById('stamina-bar-container')?.classList.add('hidden');
+    document.getElementById('relaxed-mode-banner')?.classList.add('hidden');
     document.getElementById('tutorial-box')?.classList.add('hidden');
     document.getElementById('leaderboard-panel')?.classList.remove('hidden');
     document.getElementById('lobby-screen')?.classList.remove('hidden');
@@ -510,6 +622,9 @@ class WebteeringApp {
 
     this.reloadTerrainAndCourse(seed, course);
     this.hud.updateECard(course, []);
+
+    // Start wind ambience
+    Sound.startWindAmbience();
 
     // Snap player
     const startHeight = this.terrain.getTerrainHeight(0, 0);
@@ -576,10 +691,66 @@ class WebteeringApp {
 
     this.elements.clearStaticEntities();
 
+    Sound.stopWindAmbience();
+
     document.getElementById('hud-container')?.classList.add('hidden');
     document.getElementById('stamina-bar-container')?.classList.add('hidden');
+    document.getElementById('relaxed-mode-banner')?.classList.add('hidden');
     document.getElementById('freeplay-drawer')?.classList.add('hidden');
     document.getElementById('btn-toggle-options')?.classList.add('hidden');
+    document.getElementById('lobby-screen')?.classList.remove('hidden');
+  }
+
+  private startRelaxedMode() {
+    this.isRelaxed = true;
+    this.isTutorial = false;
+    this.isFreeplay = false;
+    this.relaxedStartTime = Date.now();
+
+    // 1. Generate random seed
+    const seed = Math.floor(Math.random() * 1000000);
+    
+    // 2. Hide a target flag 50m to 80m away at a random angle
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 50.0 + Math.random() * 30.0;
+    const targetX = Math.round(Math.cos(angle) * dist);
+    const targetZ = Math.round(Math.sin(angle) * dist);
+
+    const course: Checkpoint[] = [
+      { id: 1, code: '99', x: targetX, z: targetZ, description: 'Hidden Search Feature' }
+    ];
+
+    // 3. Clear lobby & load wilderness
+    document.getElementById('lobby-screen')?.classList.add('hidden');
+    document.getElementById('hud-container')?.classList.remove('hidden');
+    document.getElementById('relaxed-mode-banner')?.classList.remove('hidden');
+    document.getElementById('leaderboard-panel')?.classList.add('hidden');
+
+    this.reloadTerrainAndCourse(seed, course);
+    this.hud.updateECard(course, []);
+    this.hud.forceHideGps = true;
+
+    // 4. Position player & lock
+    const startHeight = this.terrain.getTerrainHeight(0, 0);
+    this.controls.position.set(0, startHeight + 1.0, 0);
+    this.controls.lock();
+
+    Sound.startWindAmbience();
+  }
+
+  private exitRelaxedMode() {
+    this.isRelaxed = false;
+    this.controls.unlock();
+
+    Sound.stopWindAmbience();
+
+    this.hud.forceHideGps = false;
+    this.elements.clearStaticEntities();
+
+    document.getElementById('hud-container')?.classList.add('hidden');
+    document.getElementById('stamina-bar-container')?.classList.add('hidden');
+    document.getElementById('relaxed-mode-banner')?.classList.add('hidden');
+    document.getElementById('leaderboard-panel')?.classList.remove('hidden');
     document.getElementById('lobby-screen')?.classList.remove('hidden');
   }
 
@@ -593,6 +764,30 @@ class WebteeringApp {
 
     // 1. Update player physics/positions
     this.controls.update(delta);
+
+    // Record player paths for post-race analysis
+    const isRacingState = (this.activeRoomId && this.roomState && this.roomState.status === 'racing') || this.isFreeplay || this.isTutorial;
+    if (isRacingState) {
+      this.pathRecordTimer += delta;
+      if (this.pathRecordTimer >= 0.25) { // record every 250ms
+        this.pathRecordTimer = 0;
+        
+        // Local player path
+        const localId = this.localPlayerId || 'local';
+        if (!this.playerPaths[localId]) this.playerPaths[localId] = [];
+        this.playerPaths[localId].push({ x: this.controls.position.x, z: this.controls.position.z });
+
+        // Other players paths
+        if (this.roomState) {
+          for (const pid in this.roomState.players) {
+            if (pid === this.localPlayerId) continue;
+            const other = this.roomState.players[pid];
+            if (!this.playerPaths[pid]) this.playerPaths[pid] = [];
+            this.playerPaths[pid].push({ x: other.x, z: other.z });
+          }
+        }
+      }
+    }
 
     // Apply camera screen-shake during stumbles/slips
     if (this.controls.slipTimer > 0.0) {
@@ -657,6 +852,23 @@ class WebteeringApp {
       }
     }
 
+    // Rhythmic heavy breathing sound triggers dynamically based on exhaustion heart-rate levels
+    const needsBreathing = (this.controls.isExhausted || this.controls.stamina < 30.0) && !this.isTutorial && !this.controls.isFlightMode;
+    if (needsBreathing) {
+      this.breathingTimer += delta;
+      
+      // Calculate heart-rate breathing tempo factor (0.0 = exhausted/full pulse, 1.0 = moderately tired)
+      const staminaFactor = Math.max(0.0, Math.min(1.0, this.controls.stamina / 30.0));
+      const breathingInterval = 0.85 + staminaFactor * 0.75; // Ranges dynamically from 0.85s to 1.60s
+      
+      if (this.breathingTimer >= breathingInterval) {
+        this.breathingTimer = 0.0;
+        Sound.playSingleBreath(staminaFactor);
+      }
+    } else {
+      this.breathingTimer = 0.0;
+    }
+
     const otherState = this.roomState ? this.roomState.players : {};
     this.hud.updateMapHUD(
       this.terrain.getMapSize(),
@@ -673,6 +885,8 @@ class WebteeringApp {
     if (this.roomState) {
       this.hud.updateTimers(this.roomState.status, this.roomState.startTime, serverTime);
       this.hud.updateLeaderboard(this.roomState.scoreboard, this.localPlayerId);
+    } else if (this.isRelaxed) {
+      this.hud.updateTimers('racing', this.relaxedStartTime, serverTime);
     }
 
     // 7. Tutorial triggers checks
@@ -692,12 +906,11 @@ class WebteeringApp {
       // Mock punched list inside tutorial
       punchedCps = Array.from({ length: this.tutorialStep - 4 }, (_, i) => i);
     } else if (this.isFreeplay) {
-      activeCourse = [
-        { id: 1, code: '51', x: 40, z: -30, description: 'Boulder, West side' },
-        { id: 2, code: '52', x: -80, z: 70, description: 'Gully, upper part' },
-        { id: 3, code: 'F', x: 0, z: 10, description: 'Finish line' }
-      ];
+      activeCourse = this.activeCourse;
       punchedCps = []; // mock
+    } else if (this.isRelaxed) {
+      activeCourse = this.activeCourse;
+      punchedCps = this.relaxedPunchedCps;
     } else if (this.roomState && this.localPlayerId) {
       activeCourse = this.roomState.course;
       punchedCps = this.roomState.players[this.localPlayerId].punchedCheckpoints;
@@ -784,6 +997,15 @@ class WebteeringApp {
     } else if (this.isFreeplay) {
       // Standard local sandbox audio feedback
       Sound.playPunch();
+    } else if (this.isRelaxed) {
+      Sound.playPunch();
+      this.relaxedPunchedCps.push(0);
+      this.hud.updateECard(this.activeCourse, this.relaxedPunchedCps);
+      this.hud.triggerPunchAlert('99', 'Hidden Search Feature', Date.now() - this.relaxedStartTime);
+      this.controls.unlock();
+      setTimeout(() => {
+        this.showScoreboardSummary();
+      }, 1200);
     } else if (this.activeRoomId) {
       // Send WebSocket stamp claim to server
       this.network.punchCheckpoint(index);
