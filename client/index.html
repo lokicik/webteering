@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Webteering - Multiplayer Voxel Orienteering</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./src/style.css">
+</head>
+<body>
+  <!-- Three.js Canvas Container -->
+  <div id="canvas-container"></div>
+
+  <!-- Reticle for Pointer Lock -->
+  <div id="reticle"></div>
+
+  <!-- Loading Screen -->
+  <div id="loading-screen" class="overlay">
+    <div class="glass-panel text-center">
+      <h1 class="logo glow">WEBTEERING</h1>
+      <p class="subtitle">Multiplayer Voxel Orienteering</p>
+      <div class="loader">
+        <div class="loader-bar"></div>
+      </div>
+      <p id="loading-status">Generating Voxel Wilderness...</p>
+    </div>
+  </div>
+
+  <!-- Main Menu & Lobby Screen -->
+  <div id="lobby-screen" class="overlay">
+    <div class="glass-panel lobby-panel">
+      <div class="lobby-header">
+        <h1 class="logo glow">WEBTEERING</h1>
+        <p>Voxel Navigation Wilderness</p>
+      </div>
+
+      <div class="lobby-columns">
+        <!-- Profile Customization -->
+        <div class="lobby-col profile-section">
+          <h3>Your Runner</h3>
+          <div class="form-group">
+            <label for="player-name">Runner Nickname</label>
+            <input type="text" id="player-name" maxlength="14" value="Runner_01">
+          </div>
+          <div class="form-group">
+            <label>Jersey Color</label>
+            <div class="color-picker-grid">
+              <button class="color-btn active" style="background-color: #ff3333;" data-color="#ff3333"></button>
+              <button class="color-btn" style="background-color: #ffaa00;" data-color="#ffaa00"></button>
+              <button class="color-btn" style="background-color: #00ccff;" data-color="#00ccff"></button>
+              <button class="color-btn" style="background-color: #33ff33;" data-color="#33ff33"></button>
+              <button class="color-btn" style="background-color: #e033ff;" data-color="#e033ff"></button>
+              <button class="color-btn" style="background-color: #ffffff;" data-color="#ffffff"></button>
+            </div>
+          </div>
+          
+          <!-- Mode Select Shortcuts -->
+          <div class="mode-shortcuts">
+            <button id="btn-tutorial-start" class="btn btn-secondary glow-hover">Run Tutorial</button>
+            <button id="btn-freeplay-start" class="btn btn-accent glow-hover">Freeplay Sandbox</button>
+          </div>
+        </div>
+
+        <!-- Room Browser -->
+        <div class="lobby-col rooms-section">
+          <h3>Multiplayer Rooms</h3>
+          <div class="rooms-list-container">
+            <div id="rooms-list" class="rooms-list">
+              <!-- Dynamically populated -->
+              <p class="no-rooms">No active rooms. Create one below!</p>
+            </div>
+          </div>
+
+          <div class="room-actions">
+            <input type="text" id="new-room-id" placeholder="room-code" maxlength="8">
+            <button id="btn-create-room" class="btn btn-primary">Create Room</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- In-game Lobby Room Screen -->
+  <div id="room-wait-screen" class="overlay hidden">
+    <div class="glass-panel room-wait-panel">
+      <h2 id="room-title">Room: lobby-code</h2>
+      <p id="room-map-seed">Map Seed: -----</p>
+      
+      <div class="player-grid-container">
+        <h3>Connected Runners</h3>
+        <div id="room-players-grid" class="players-grid">
+          <!-- Dynamically populated -->
+        </div>
+      </div>
+
+      <div class="room-footer">
+        <button id="btn-leave-room" class="btn btn-secondary">Leave Room</button>
+        <button id="btn-start-race" class="btn btn-primary glow-active hidden">Start Race!</button>
+        <p id="wait-host-msg" class="wait-msg">Waiting for host to start the race...</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- In-game HUD Overlays -->
+  <div id="hud-container" class="hidden">
+    <!-- Top Countdown / Race Status Banner -->
+    <div id="race-status-banner">
+      <h1 id="status-msg" class="pulse">WAITING</h1>
+      <div id="race-timer" class="tech-font">00:00.00</div>
+      <!-- Stamina Bar -->
+      <div id="stamina-bar-container" class="hidden">
+        <div id="stamina-bar-fill"></div>
+      </div>
+    </div>
+
+    <!-- Active Checkpoint & E-Card Punch List -->
+    <div id="ecard-panel" class="glass-panel-hud">
+      <div class="panel-header">E-CARD CHECKPOINTS</div>
+      <div id="checkpoint-punch-list" class="punch-list">
+        <!-- Dynamically populated e.g. "1 [31] 00:43.12" -->
+      </div>
+    </div>
+
+    <!-- Live Race Standings Leaderboard -->
+    <div id="leaderboard-panel" class="glass-panel-hud">
+      <div class="panel-header">LIVE LEADERBOARD</div>
+      <div id="leaderboard-entries" class="leaderboard-list">
+        <!-- Dynamically populated -->
+      </div>
+    </div>
+
+    <!-- Floating 3D/2D Compass Overlay -->
+    <div id="compass-container">
+      <div id="compass-bezel">
+        <div id="compass-rose">
+          <div class="direction north">N</div>
+          <div class="direction east">E</div>
+          <div class="direction south">S</div>
+          <div class="direction west">W</div>
+          <div class="needle"></div>
+        </div>
+        <div class="heading-line"></div>
+      </div>
+    </div>
+
+    <!-- Toggle Map Container Overlay (Floating paper) -->
+    <div id="map-panel" class="map-paper hidden">
+      <div class="map-controls">
+        <span class="map-title">TOPOGRAPHIC MAP</span>
+        <div class="map-mode-selector">
+          <button id="btn-map-mode-north" class="map-mode-btn active" title="North-Up Mode">North</button>
+          <button id="btn-map-mode-head" class="map-mode-btn" title="Heading-Up Mode">Head</button>
+          <button id="btn-map-mode-man" class="map-mode-btn" title="Manual Rotation Mode (Q/R)">Man</button>
+        </div>
+        <button id="btn-close-map" class="map-close-btn">&times;</button>
+      </div>
+      <div class="map-wrapper">
+        <canvas id="topo-map-canvas"></canvas>
+      </div>
+      <div id="map-legend">
+        <span class="legend-item"><span class="legend-dot" style="background:#ffdd00;"></span>Open</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#ffffff;"></span>Forest</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#60c060;"></span>Thicket</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#00a0f0;"></span>Water</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#a06020;"></span>Path</span>
+        <span class="legend-item"><span class="legend-ring"></span>Checkpoints</span>
+      </div>
+    </div>
+
+    <!-- Punch Alert UI -->
+    <div id="punch-alert" class="hidden">
+      <div class="alert-content">
+        <span class="cp-code" id="alert-cp-code">31</span>
+        <span class="cp-desc" id="alert-cp-desc">Boulder, East side</span>
+        <span class="cp-punch-time" id="alert-cp-time">PUNCHED! 01:23.45</span>
+      </div>
+    </div>
+
+    <!-- Tutorial Box Overlay -->
+    <div id="tutorial-box" class="glass-panel hidden">
+      <h3>Tutorial Training</h3>
+      <p id="tutorial-text">Follow the blue arrows to begin...</p>
+      <div class="tutorial-actions">
+        <button id="btn-tutorial-skip" class="btn btn-secondary-sm">Skip</button>
+        <button id="btn-tutorial-next" class="btn btn-primary-sm hidden">Next</button>
+      </div>
+    </div>
+
+    <!-- Freeplay Options Drawer Overlay -->
+    <div id="freeplay-drawer" class="glass-panel-hud hidden">
+      <div class="panel-header">SANDBOX SETTINGS</div>
+      <div class="drawer-content">
+        <div class="form-group-sm">
+          <label>GPS Indicator</label>
+          <input type="checkbox" id="chk-gps" checked>
+        </div>
+        <div class="form-group-sm">
+          <label>Time of Day</label>
+          <select id="sel-time">
+            <option value="noon">Sunny Noon</option>
+            <option value="sunset">Sunset Glow</option>
+            <option value="night">Spooky Night (Headlamp)</option>
+          </select>
+        </div>
+        <div class="form-group-sm">
+          <label>Mist/Fog Density</label>
+          <input type="range" id="rng-fog" min="0" max="100" value="15">
+        </div>
+        <div class="form-group-sm">
+          <label>Flight Mode (F)</label>
+          <input type="checkbox" id="chk-fly">
+        </div>
+        <button id="btn-exit-freeplay" class="btn btn-secondary-sm" style="width:100%; margin-top:10px;">Return to Main Menu</button>
+      </div>
+    </div>
+
+    <!-- Action Hint Proximity Prompt -->
+    <div id="action-prompt" class="hidden">
+      <div class="key-indicator">E</div>
+      <span id="prompt-msg">Punch Checkpoint [31]</span>
+    </div>
+
+    <!-- In-game UI Toggles (bottom bar) -->
+    <div id="hud-bottom-bar">
+      <button id="btn-toggle-map" class="hud-btn glow-hover" title="Toggle Topographic Map (M)">🗺️ MAP</button>
+      <p class="controls-hint">WASD to Move | Mouse to Look | E to Punch | M for Map</p>
+      <button id="btn-toggle-options" class="hud-btn glow-hover hidden" title="Toggle Sandbox Settings">⚙️ SETTINGS</button>
+    </div>
+  </div>
+
+  <!-- Dynamic Post-race scoreboard summary overlay -->
+  <div id="podium-screen" class="overlay hidden">
+    <div class="glass-panel podium-panel text-center">
+      <h2 class="glow">RACE COMPLETED!</h2>
+      <div class="podium-results">
+        <table class="scoreboard-table">
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>Runner</th>
+              <th>Checkpoints</th>
+              <th>Race Time</th>
+            </tr>
+          </thead>
+          <tbody id="podium-tbody">
+            <!-- Dynamically populated -->
+          </tbody>
+        </table>
+      </div>
+      <button id="btn-podium-close" class="btn btn-primary" style="margin-top:20px;">Return to Lobby</button>
+    </div>
+  </div>
+
+  <!-- Mobile On-screen Controls Overlay -->
+  <div id="mobile-controls" class="hidden">
+    <div id="joystick-container"></div>
+    <button id="btn-mobile-punch" class="mobile-action-btn">PUNCH (E)</button>
+    <button id="btn-mobile-map" class="mobile-action-btn">MAP (M)</button>
+  </div>
+
+  <!-- Audio synthesiser element -->
+  <script type="module" src="./src/main.ts"></script>
+</body>
+</html>
