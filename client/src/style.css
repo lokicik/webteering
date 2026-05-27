@@ -2368,6 +2368,34 @@ body {
   border-color: var(--neon-cyan);
 }
 
+.form-control-locker {
+  width: 100%;
+  box-sizing: border-box;
+  background: rgba(8, 14, 26, 0.5);
+  border: var(--glass-panel-border);
+  border-radius: 10px;
+  color: white;
+  padding: 12px 16px;
+  font-size: 0.85rem;
+  outline: none;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+.form-control-locker:focus {
+  border-color: var(--neon-cyan);
+  box-shadow: 0 0 10px rgba(0, 204, 255, 0.25);
+}
+
+.form-control-locker option {
+  background: #0d1326;
+  color: white;
+  font-weight: 600;
+  padding: 10px;
+}
+
 .quick-runs-section {
   display: flex;
   flex-direction: column;
@@ -2525,6 +2553,21 @@ body {
     grid-column: 1 / span 2;
     grid-row: 1;
     height: 150px;
+  }
+}
+
+/* Media responsive overrides for new mini-map and compass strip */
+@media (max-width: 768px) {
+  #hud-compass-strip-container {
+    width: 240px !important;
+    height: 28px !important;
+    top: 8px;
+  }
+  #minimap-container {
+    width: 90px !important;
+    height: 90px !important;
+    top: 8px;
+    right: 8px;
   }
 }
 

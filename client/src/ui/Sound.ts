@@ -4,6 +4,46 @@ export class Sound {
   private static windSource: AudioBufferSourceNode | null = null;
   private static windGain: GainNode | null = null;
   private static windInterval: any = null;
+  
+  private static masterFilter: BiquadFilterNode | null = null;
+
+  private static getMasterFilter(): BiquadFilterNode {
+    const ctx = this.getContext();
+    if (!this.masterFilter) {
+      this.masterFilter = ctx.createBiquadFilter();
+      this.masterFilter.type = 'lowpass';
+      this.masterFilter.frequency.setValueAtTime(20000, ctx.currentTime);
+      this.masterFilter.connect(ctx.destination);
+    }
+    return this.masterFilter;
+  }
+
+  public static updateFilter(isSwimming: boolean, stamina: number) {
+    try {
+      const ctx = this.getContext();
+      const filter = this.getMasterFilter();
+      
+      let targetFreq = 20000;
+      let targetQ = 1.0;
+      
+      if (isSwimming) {
+        // Submerged underwater muffled effect
+        targetFreq = 420;
+        targetQ = 2.5;
+      } else if (stamina < 35.0) {
+        // Exhaustion resonant low-pass sweep
+        const factor = stamina / 35.0; // 0.0 to 1.0
+        targetFreq = 500 + factor * 1500; // sweep between 500Hz and 2000Hz
+        targetQ = 2.5 - factor * 1.5;
+      }
+      
+      const now = ctx.currentTime;
+      filter.frequency.setTargetAtTime(targetFreq, now, 0.15);
+      filter.Q.setTargetAtTime(targetQ, now, 0.15);
+    } catch (err) {
+      // Fail silently
+    }
+  }
 
   private static getContext(): AudioContext {
     if (!this.ctx) {
@@ -31,7 +71,7 @@ export class Sound {
         gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay + 0.08); // short decay
         
         osc.connect(gain);
-        gain.connect(ctx.destination);
+        gain.connect(this.getMasterFilter());
         
         osc.start(ctx.currentTime + delay);
         osc.stop(ctx.currentTime + delay + 0.08);
@@ -58,7 +98,7 @@ export class Sound {
       gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
 
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getMasterFilter());
 
       osc.start(ctx.currentTime);
       osc.stop(ctx.currentTime + 0.22);
@@ -81,7 +121,7 @@ export class Sound {
       gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + (isGo ? 0.35 : 0.08));
 
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getMasterFilter());
 
       osc.start(ctx.currentTime);
       osc.stop(ctx.currentTime + (isGo ? 0.35 : 0.08));
@@ -119,7 +159,7 @@ export class Sound {
 
       bufferSource.connect(filter);
       filter.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getMasterFilter());
 
       bufferSource.start();
       bufferSource.stop(ctx.currentTime + 0.35);
@@ -146,7 +186,7 @@ export class Sound {
 
       this.windSource.connect(filter);
       filter.connect(this.windGain);
-      this.windGain.connect(ctx.destination);
+      this.windGain.connect(this.getMasterFilter());
 
       this.windSource.start();
 
@@ -210,7 +250,7 @@ export class Sound {
 
       inhaleSource.connect(inhaleFilter);
       inhaleFilter.connect(inhaleGain);
-      inhaleGain.connect(ctx.destination);
+      inhaleGain.connect(this.getMasterFilter());
       inhaleSource.start(now);
       inhaleSource.stop(now + breathDuration);
 
@@ -230,7 +270,7 @@ export class Sound {
 
       exhaleSource.connect(exhaleFilter);
       exhaleFilter.connect(exhaleGain);
-      exhaleGain.connect(ctx.destination);
+      exhaleGain.connect(this.getMasterFilter());
       exhaleSource.start(now + exhaleOffset);
       exhaleSource.stop(now + exhaleOffset + breathDuration * 1.25);
     } catch (err) {
@@ -280,7 +320,7 @@ export class Sound {
         oscGain.gain.setValueAtTime(volume * 1.4, now);
         oscGain.gain.exponentialRampToValueAtTime(0.001, now + 0.025);
         osc.connect(oscGain);
-        oscGain.connect(ctx.destination);
+        oscGain.connect(this.getMasterFilter());
         osc.start(now);
         osc.stop(now + 0.025);
       } else {
@@ -296,7 +336,7 @@ export class Sound {
 
       bufferSource.connect(filter);
       filter.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getMasterFilter());
 
       bufferSource.start(now);
       bufferSource.stop(now + duration);
@@ -325,7 +365,7 @@ export class Sound {
 
       bufferSource.connect(filter);
       filter.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getMasterFilter());
       bufferSource.start(now);
       bufferSource.stop(now + 2.8);
 
@@ -338,7 +378,7 @@ export class Sound {
 
       gain.connect(echoDelay);
       echoDelay.connect(echoGain);
-      echoGain.connect(ctx.destination);
+      echoGain.connect(this.getMasterFilter());
     } catch (err) {
       // Fail silently
     }
@@ -359,7 +399,7 @@ export class Sound {
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.015);
 
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getMasterFilter());
 
       osc.start(now);
       osc.stop(now + 0.015);
@@ -383,7 +423,7 @@ export class Sound {
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.26);
 
         osc.connect(gain);
-        gain.connect(ctx.destination);
+        gain.connect(this.getMasterFilter());
 
         osc.start(now);
         osc.stop(now + 0.26);
@@ -416,7 +456,7 @@ export class Sound {
 
       scrape.connect(scrapeFilter);
       scrapeFilter.connect(scrapeGain);
-      scrapeGain.connect(ctx.destination);
+      scrapeGain.connect(this.getMasterFilter());
       scrape.start(now);
       scrape.stop(now + 0.32);
 
@@ -436,7 +476,7 @@ export class Sound {
 
       grunt.connect(gruntFilter);
       gruntFilter.connect(gruntGain);
-      gruntGain.connect(ctx.destination);
+      gruntGain.connect(this.getMasterFilter());
 
       grunt.start(now);
       grunt.stop(now + 0.24);
@@ -465,7 +505,7 @@ export class Sound {
 
       scrape.connect(filter);
       filter.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getMasterFilter());
 
       scrape.start(now);
       scrape.stop(now + 0.12);
@@ -476,10 +516,15 @@ export class Sound {
 
   // Beautiful Ambient Synthesized Soundtrack (Sine Wave Chord Pad Progression)
   private static soundtrackInterval: any = null;
-  public static startSoundtrack() {
+  public static startSoundtrack(track?: 'ambient' | 'chill' | 'upbeat') {
     try {
       const ctx = this.getContext();
-      if (this.soundtrackInterval) return;
+      const activeTrack = track || 'ambient';
+
+      if (this.soundtrackInterval) {
+        clearInterval(this.soundtrackInterval);
+        this.soundtrackInterval = null;
+      }
 
       const chords = [
         [220.00, 329.63, 440.00, 659.25], // A Minor
@@ -491,8 +536,26 @@ export class Sound {
 
       const playChord = () => {
         const now = ctx.currentTime;
-        const activeChord = chords[chordIndex];
-        chordIndex = (chordIndex + 1) % chords.length;
+        
+        let chordsList = chords;
+        if (activeTrack === 'chill') {
+          chordsList = [
+            [261.63, 392.00, 523.25, 587.33], // C9
+            [311.13, 466.16, 622.25, 698.46], // Eb9
+            [349.23, 523.25, 698.46, 783.99], // F9
+            [293.66, 440.00, 587.33, 659.25]  // G9
+          ];
+        } else if (activeTrack === 'upbeat') {
+          chordsList = [
+            [196.00, 293.66, 392.00, 493.88], // G Major
+            [220.00, 329.63, 440.00, 554.37], // A Major
+            [293.66, 440.00, 587.33, 739.99], // D Major
+            [261.63, 329.63, 523.25, 659.25]  // C Major
+          ];
+        }
+
+        const activeChord = chordsList[chordIndex];
+        chordIndex = (chordIndex + 1) % chordsList.length;
 
         // Trigger each note in the chord pad
         activeChord.forEach((freq, idx) => {
@@ -509,7 +572,7 @@ export class Sound {
           gain.gain.exponentialRampToValueAtTime(0.001, now + 4.8); // gentle fade
 
           osc.connect(gain);
-          gain.connect(ctx.destination);
+          gain.connect(this.getMasterFilter());
 
           osc.start(now);
           osc.stop(now + 4.8);

@@ -398,6 +398,25 @@ export class Controls {
       }
     }
 
+    // Apply slope factor when grounded and moving (uphill penalty, downhill boost)
+    if (this.isGrounded && isMoving) {
+      const checkDist = 0.8;
+      const checkX = this.position.x + rotatedMove.x * checkDist;
+      const checkZ = this.position.z + rotatedMove.z * checkDist;
+      const checkHeight = this.terrain.getTerrainHeight(checkX, checkZ);
+      const slopeDiff = checkHeight - this.position.y;
+
+      if (slopeDiff > 0.05) {
+        // Uphill: slow down up to 40% (at slopeDiff >= 1.0m)
+        const factor = Math.max(0.6, 1.0 - (slopeDiff / 1.0) * 0.4);
+        currentSpeed *= factor;
+      } else if (slopeDiff < -0.05) {
+        // Downhill: boost speed up to 15% (at slopeDiff <= -1.2m)
+        const factor = Math.min(1.15, 1.0 + (Math.abs(slopeDiff) / 1.2) * 0.15);
+        currentSpeed *= factor;
+      }
+    }
+
     // Horizontal velocity interpolation (inertia/friction)
     const targetVelX = rotatedMove.x * currentSpeed;
     const targetVelZ = rotatedMove.z * currentSpeed;
@@ -408,29 +427,43 @@ export class Controls {
 
 
     // --- 4. STEP CLIMB & COLLISION VERIFICATION ---
-    const nextPos = this.position.clone().addScaledVector(new THREE.Vector3(this.velocity.x, 0, this.velocity.z), delta);
-    const targetFloorHeight = this.terrain.getTerrainHeight(nextPos.x, nextPos.z);
+    // Split X and Z axis movements to allow smooth sliding along walls and trees!
     
+    // 4a. X-Axis Movement and Collision (climb steps up to 0.65m smoothly)
+    const nextPosX = this.position.x + this.velocity.x * delta;
+    const targetFloorHeightX = this.terrain.getTerrainHeight(nextPosX, this.position.z);
+    const heightDiffX = targetFloorHeightX - this.position.y;
+
+    if (heightDiffX > 0.65) {
+      this.velocity.x = 0; // block X speed
+    } else {
+      this.position.x = nextPosX;
+    }
+
+    // 4b. Z-Axis Movement and Collision (climb steps up to 0.65m smoothly)
+    const nextPosZ = this.position.z + this.velocity.z * delta;
+    const targetFloorHeightZ = this.terrain.getTerrainHeight(this.position.x, nextPosZ);
+    const heightDiffZ = targetFloorHeightZ - this.position.y;
+
+    if (heightDiffZ > 0.65) {
+      this.velocity.z = 0; // block Z speed
+    } else {
+      this.position.z = nextPosZ;
+    }
+
+    // 4c. Slope & Elevation Snap (using the final combined position)
+    const targetFloorHeight = this.terrain.getTerrainHeight(this.position.x, this.position.z);
     const heightDiff = targetFloorHeight - this.position.y;
 
-    if (heightDiff > 0.4) {
-      // Wall block: Height is too high to step up. Block horizontal velocity!
-      this.velocity.x = 0;
-      this.velocity.z = 0;
-    } else {
-      // Step up: Height is low, slide player onto next height elevation smoothly
-      this.position.x = nextPos.x;
-      this.position.z = nextPos.z;
-      
-      if (this.isGrounded) {
-        if (heightDiff < -3.5) {
-          // Ledge drop: player walks off a cliff! Become ungrounded and fall.
-          this.isGrounded = false;
-        } else {
-          // Walkable slope: keep player perfectly aligned to the terrain height!
-          this.position.y = targetFloorHeight;
-        }
+    if (this.isGrounded) {
+      if (heightDiff < -3.5) {
+        // Ledge drop: player walks off a cliff! Become ungrounded and fall.
+        this.isGrounded = false;
+      } else {
+        // Walkable slope: keep player perfectly aligned to the terrain height!
+        this.position.y = targetFloorHeight;
       }
+    }
 
       // Slope slipping & sliding check (descending slope slides)
       if (this.isGrounded && !this.isSwimming && !this.isFlightMode) {
@@ -467,7 +500,6 @@ export class Controls {
           }
         }
       }
-    }
 
     // --- 5. VERTICAL MOVEMENT & LANDING STUNS ---
     this.position.y += this.velocity.y * delta;
@@ -475,9 +507,19 @@ export class Controls {
     const currentFloorHeight = this.terrain.getTerrainHeight(this.position.x, this.position.z);
     
     // Snapping with a 0.8m recovery shell if falling or walking down (velocity.y <= 0) to prevent slope launch
-    const landingThreshold = (this.velocity.y <= 0.0) ? 0.8 : 0.05;
+    // If rising (velocity.y > 0), only snap if they actually penetrate the terrain (this.position.y <= currentFloorHeight)
+    let landed = false;
+    if (this.velocity.y <= 0.0) {
+      if (this.position.y <= currentFloorHeight + 0.8) {
+        landed = true;
+      }
+    } else {
+      if (this.position.y <= currentFloorHeight) {
+        landed = true;
+      }
+    }
     
-    if (this.position.y <= currentFloorHeight + landingThreshold) {
+    if (landed) {
       // Landed!
       
       // Fall stun check: if fell too hard
@@ -567,5 +609,8 @@ export class Controls {
       this.camera.rotation.x += (Math.random() - 0.5) * shakeAmt;
       this.camera.rotation.y += (Math.random() - 0.5) * shakeAmt;
     }
+
+    // Dynamic low-pass sound sweep
+    Sound.updateFilter(this.isSwimming, this.stamina);
   }
 }

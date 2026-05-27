@@ -8,6 +8,7 @@ import { HUD } from './ui/HUD';
 import { Sound } from './ui/Sound';
 import { Checkpoint, RoomState } from './sharedTypes';
 import { Foliage } from './game/Foliage';
+import { WildlifeManager } from './game/Wildlife';
 
 class WebteeringApp {
   private engine!: Engine;
@@ -17,6 +18,7 @@ class WebteeringApp {
   private network!: Network;
   private hud!: HUD;
   private foliage!: Foliage;
+  private wildlife!: WildlifeManager;
 
   // App States
   private activeRoomId: string | null = null;
@@ -67,6 +69,7 @@ class WebteeringApp {
   private lobbyPedestals: THREE.Mesh[] = [];
   private lobbyPlayersMeshes: THREE.Group[] = [];
   private isLobbyActive = true; // Starts in the Landing screen / Lobby loop
+  private activeTimeOfDayState: 'noon' | 'sunset' | 'night' = 'noon';
 
   constructor() {
     this.initCore();
@@ -86,6 +89,7 @@ class WebteeringApp {
     // 3. Initialise procedural terrain
     // Start with a temporary placeholder seed, we reload on join
     this.terrain = new Terrain(this.engine.scene, 12345);
+    this.engine.setTerrain(this.terrain);
     
     // 4. Initialise First Person controls with terrain heights hook
     this.controls = new Controls(this.engine.camera, this.engine.renderer.domElement, this.terrain);
@@ -95,6 +99,9 @@ class WebteeringApp {
     
     // 5.5. Initialise instanced nature assets manager
     this.foliage = new Foliage(this.engine.scene);
+    
+    // 5.6. Initialise procedural voxel wildlife manager
+    this.wildlife = new WildlifeManager(this.engine.scene, this.terrain);
 
     // Register active loops
     this.engine.addUpdatable(this);
@@ -109,12 +116,20 @@ class WebteeringApp {
     // Generate terrain visual in the background for landing scene preview immediately
     this.terrain.generateTerrainMeshes();
     this.foliage.generateFoliage(this.terrain, 12345, 'alpine');
+    this.wildlife.spawnCreatures(35);
 
     // Build the rotating player model on landing
     this.rebuildLobby3D();
 
     // 6. Start the engine loop
     this.engine.start();
+  }
+
+  private getCustomizationString(): string {
+    const hairVal = (document.getElementById('sel-hair-style') as HTMLSelectElement)?.value || 'spiky';
+    const torsoVal = (document.getElementById('sel-torso-pattern') as HTMLSelectElement)?.value || 'solid';
+    const accVal = (document.getElementById('sel-accessory') as HTMLSelectElement)?.value || 'none';
+    return `${this.selectedJerseyColor}|${hairVal}|${torsoVal}|${accVal}`;
   }
 
   // --- 3D PEDESTALS PARTY GENERATION ---
@@ -150,8 +165,8 @@ class WebteeringApp {
     const myReadyColor = this.isLocalReady ? 0x33ff33 : 0x00ccff;
     createPedestal(0, yCenter, 0, myReadyColor);
 
-    const myRunner = this.elements.buildVoxelRunner(this.selectedJerseyColor);
-    myRunner.position.set(0, yCenter + 0.1, 0);
+    const myRunner = this.elements.buildVoxelRunner(this.getCustomizationString());
+    myRunner.position.set(0, yCenter + 0.15, 0);
     this.engine.scene.add(myRunner);
     this.lobbyPlayersMeshes.push(myRunner);
 
@@ -188,6 +203,29 @@ class WebteeringApp {
         } else {
           tagStatus.innerText = 'SOLO';
           tagP1.classList.remove('ready');
+
+          // Dynamically adjust Ready/Play button and Match details for Solo play
+          const btnReadyPlay = document.getElementById('btn-ready-play') as HTMLElement;
+          const msgHost = document.getElementById('wait-host-msg') as HTMLElement;
+          const matchModeLabel = document.querySelector('.match-mode-label') as HTMLElement;
+
+          if (btnReadyPlay) {
+            btnReadyPlay.innerText = 'PLAY SOLO ➔';
+            btnReadyPlay.className = 'btn-fortnite-play animate-pulse-glow';
+          }
+          if (msgHost) msgHost.classList.add('hidden');
+          if (matchModeLabel) matchModeLabel.innerText = 'SOLO PRACTICE MATCH';
+
+          const settingsSum = document.getElementById('match-settings-summary');
+          if (settingsSum) {
+            const selBiome = document.getElementById('sel-biome') as HTMLSelectElement;
+            const biomeText = selBiome ? selBiome.options[selBiome.selectedIndex].text : 'Alpine';
+            const selTime = document.getElementById('sel-time') as HTMLSelectElement;
+            const timeText = selTime ? selTime.options[selTime.selectedIndex].text : 'Sunny Noon';
+            const selGameMode = document.getElementById('sel-game-mode-lobby') as HTMLSelectElement;
+            const modeText = selGameMode ? selGameMode.options[selGameMode.selectedIndex].text : 'Classic';
+            settingsSum.innerText = `${modeText} • ${biomeText} • ${timeText}`;
+          }
         }
       }
     }
@@ -210,7 +248,7 @@ class WebteeringApp {
 
         // Spawn runner model
         const runner = this.elements.buildVoxelRunner(p.skinColor);
-        runner.position.set(px, py + 0.1, pz);
+        runner.position.set(px, py + 0.15, pz);
         
         // Tilt runner slightly toward me
         runner.rotation.y = isLeft ? 0.35 : -0.35;
@@ -223,7 +261,7 @@ class WebteeringApp {
         if (tag) {
           tag.classList.remove('hidden');
           const tColor = tag.querySelector('.tag-color-indicator') as HTMLElement;
-          if (tColor) tColor.style.backgroundColor = p.skinColor;
+          if (tColor) tColor.style.backgroundColor = p.skinColor.split('|')[0];
           const tName = tag.querySelector('.tag-name') as HTMLElement;
           if (tName) tName.innerText = p.name;
           const tStatus = tag.querySelector('.tag-status') as HTMLElement;
@@ -283,14 +321,18 @@ class WebteeringApp {
 
     // 2. Soundtrack toggles
     const btnSoundtrack = document.getElementById('btn-toggle-soundtrack');
+    const selSoundtrack = document.getElementById('sel-soundtrack') as HTMLSelectElement;
+    
     btnSoundtrack?.addEventListener('click', () => {
       this.isSoundtrackPlaying = !this.isSoundtrackPlaying;
       if (this.isSoundtrackPlaying) {
-        Sound.startSoundtrack();
+        Sound.startSoundtrack('ambient');
         if (btnSoundtrack) btnSoundtrack.innerHTML = 'Mute Soundtrack 🔇';
+        if (selSoundtrack) selSoundtrack.value = 'ambient';
       } else {
         Sound.stopSoundtrack();
         if (btnSoundtrack) btnSoundtrack.innerHTML = 'Toggle Soundtrack 🔊';
+        if (selSoundtrack) selSoundtrack.value = 'none';
       }
     });
 
@@ -327,6 +369,70 @@ class WebteeringApp {
         this.selectedJerseyColor = (btn as HTMLElement).dataset.color || '#ff3333';
         this.rebuildLobby3D();
       });
+    });
+
+    // Connect new character model and parameter selectors
+    const selHair = document.getElementById('sel-hair-style') as HTMLSelectElement;
+    const selTorso = document.getElementById('sel-torso-pattern') as HTMLSelectElement;
+    const selAccessory = document.getElementById('sel-accessory') as HTMLSelectElement;
+    const selBiomeLobby = document.getElementById('sel-biome') as HTMLSelectElement;
+    const selTimeLobby = document.getElementById('sel-time') as HTMLSelectElement;
+    const selGameModeLobby = document.getElementById('sel-game-mode-lobby') as HTMLSelectElement;
+
+    const handleModelChange = () => {
+      Sound.playDialClick();
+      this.rebuildLobby3D();
+    };
+    selHair?.addEventListener('change', handleModelChange);
+    selTorso?.addEventListener('change', handleModelChange);
+    selAccessory?.addEventListener('change', handleModelChange);
+
+    const handleLobbyParamChange = () => {
+      Sound.playDialClick();
+      const biome = selBiomeLobby?.value || 'alpine';
+      const tod = selTimeLobby?.value as 'noon' | 'sunset' | 'night' | 'cycle' || 'noon';
+      
+      // Regenerate preview terrain matching selections immediately!
+      if (this.terrain) {
+        this.terrain.dispose();
+      }
+      this.terrain = new Terrain(this.engine.scene, 12345, biome);
+      this.controls.setTerrain(this.terrain);
+      this.engine.setTerrain(this.terrain);
+      this.terrain.generateTerrainMeshes();
+      this.foliage.clear();
+      this.foliage.generateFoliage(this.terrain, 12345, biome);
+      this.wildlife.spawnCreatures(35);
+      if (tod !== 'cycle') {
+        this.engine.setTimeOfDay(tod as any);
+      }
+
+      this.rebuildLobby3D();
+    };
+    selBiomeLobby?.addEventListener('change', handleLobbyParamChange);
+    selTimeLobby?.addEventListener('change', handleLobbyParamChange);
+    selGameModeLobby?.addEventListener('change', handleLobbyParamChange);
+
+    const selEmote = document.getElementById('sel-lobby-emote') as HTMLSelectElement;
+    selEmote?.addEventListener('change', () => {
+      Sound.playDialClick();
+      if (selEmote.value === 'jump' || selEmote.value === 'dance') {
+        Sound.playLockChime();
+      }
+    });
+
+    selSoundtrack?.addEventListener('change', () => {
+      Sound.playDialClick();
+      const track = selSoundtrack.value;
+      if (track === 'none') {
+        Sound.stopSoundtrack();
+        this.isSoundtrackPlaying = false;
+        if (btnSoundtrack) btnSoundtrack.innerHTML = 'Toggle Soundtrack 🔊';
+      } else {
+        Sound.startSoundtrack(track as any);
+        this.isSoundtrackPlaying = true;
+        if (btnSoundtrack) btnSoundtrack.innerHTML = 'Mute Soundtrack 🔇';
+      }
     });
 
     // 4. Real-time Lobby chat hooks
@@ -404,7 +510,7 @@ class WebteeringApp {
             r.id,
             r.name,
             nameInput.value || 'Runner',
-            this.selectedJerseyColor
+            this.getCustomizationString()
           );
         });
 
@@ -428,7 +534,7 @@ class WebteeringApp {
         code,
         `Room ${code.toUpperCase()}`,
         nameInput.value || 'Runner',
-        this.selectedJerseyColor
+        this.getCustomizationString()
       );
     });
 
@@ -453,9 +559,16 @@ class WebteeringApp {
     const btnReadyPlay = document.getElementById('btn-ready-play');
     btnReadyPlay?.addEventListener('click', () => {
       if (!this.activeRoomId) {
-        // Launch freeplay solo mode directly
         Sound.playTick(true);
-        this.startFreeplayMode();
+        const selGameMode = document.getElementById('sel-game-mode-lobby') as HTMLSelectElement;
+        const mode = selGameMode?.value || 'classic';
+        if (mode === 'tutorial') {
+          this.startTutorialMode();
+        } else if (mode === 'relaxed') {
+          this.startRelaxedMode();
+        } else {
+          this.startFreeplayMode();
+        }
       } else {
         if (this.isRoomHost()) {
           // Host starts countdown
@@ -472,6 +585,7 @@ class WebteeringApp {
     // Close scoreboard triggers
     btnPodiumClose?.addEventListener('click', () => {
       document.getElementById('podium-screen')?.classList.add('hidden');
+      document.getElementById('lobby-screen')?.classList.remove('hidden');
       if (this.activeRoomId) {
         // Return to lobby
         this.isLobbyActive = true;
@@ -505,6 +619,7 @@ class WebteeringApp {
         
         document.getElementById('room-active-footer')?.classList.add('hidden');
         document.getElementById('hud-container')?.classList.add('hidden');
+        document.getElementById('lobby-screen')?.classList.remove('hidden');
         
         this.isLobbyActive = true;
         this.rebuildLobby3D();
@@ -676,6 +791,7 @@ class WebteeringApp {
     // Regenerate heightfield meshes
     this.terrain = new Terrain(this.engine.scene, seed, biome);
     this.controls.setTerrain(this.terrain);
+    this.engine.setTerrain(this.terrain);
     this.terrain.generateTerrainMeshes();
 
     // Redraw HUD compass/legend once
@@ -683,6 +799,7 @@ class WebteeringApp {
 
     // Scatter instanced foliage matching active biome
     this.foliage.generateFoliage(this.terrain, seed, biome);
+    this.wildlife.spawnCreatures(35);
 
     // Snap local player to dry start position height
     const startHeight = this.terrain.getTerrainHeight(0, 0);
@@ -732,7 +849,7 @@ class WebteeringApp {
           const p = this.roomState.players[pid];
           playersMapping[pid] = {
             name: p.name,
-            skinColor: p.skinColor
+            skinColor: p.skinColor.split('|')[0]
           };
         }
       }
@@ -802,6 +919,9 @@ class WebteeringApp {
     this.isFreeplay = false;
     this.controls.isFlightMode = false;
     this.tutorialStep = 1;
+
+    this.isLobbyActive = false;
+    this.cleanupLobby3D();
 
     // Load static tutorial seed (seed = 101)
     const course: Checkpoint[] = [
@@ -920,6 +1040,9 @@ class WebteeringApp {
     document.getElementById('tutorial-box')?.classList.add('hidden');
     document.getElementById('leaderboard-panel')?.classList.remove('hidden');
     document.getElementById('lobby-screen')?.classList.remove('hidden');
+
+    this.isLobbyActive = true;
+    this.rebuildLobby3D();
   }
 
   // --- GAME MODE: FREEPLAY SANDBOX ---
@@ -927,6 +1050,10 @@ class WebteeringApp {
     this.isFreeplay = true;
     this.isTutorial = false;
     this.controls.isFlightMode = false;
+
+    this.isLobbyActive = false;
+    this.cleanupLobby3D();
+
     this.rogainePunchedCps = [];
     this.rogainePoints = 0;
     this.relaxedStartTime = Date.now(); // Store start time for splits and Rogaine time limits
@@ -944,7 +1071,10 @@ class WebteeringApp {
       { id: 6, code: 'F', x: 0, z: 10, description: 'Finish banner' }
     ];
 
-    const selGameMode = document.getElementById('sel-game-mode') as HTMLSelectElement;
+    const selBiomeLobby = document.getElementById('sel-biome') as HTMLSelectElement;
+    if (selBiomeLobby) this.activeBiome = selBiomeLobby.value;
+
+    const selGameMode = document.getElementById('sel-game-mode-lobby') as HTMLSelectElement;
     this.isRogaine = selGameMode ? (selGameMode.value === 'rogaine') : false;
 
     // Toggle score HUD panels on freeplay reload
@@ -980,7 +1110,7 @@ class WebteeringApp {
     // Hook sandbox sliders/options
     const selTime = document.getElementById('sel-time') as HTMLSelectElement;
     const selBiome = document.getElementById('sel-biome') as HTMLSelectElement;
-    const selGameModeOpt = document.getElementById('sel-game-mode') as HTMLSelectElement;
+    const selGameModeOpt = document.getElementById('sel-game-mode-ingame') as HTMLSelectElement;
     const rngFog = document.getElementById('rng-fog') as HTMLInputElement;
     const chkFly = document.getElementById('chk-fly') as HTMLInputElement;
     const chkRain = document.getElementById('chk-rain') as HTMLInputElement;
@@ -1001,6 +1131,10 @@ class WebteeringApp {
         this.isRogaine = (selGameModeOpt.value === 'rogaine');
         this.rogainePunchedCps = [];
         this.rogainePoints = 0;
+
+        // Sync back to lobby selector for robustness
+        const selLobby = document.getElementById('sel-game-mode-lobby') as HTMLSelectElement;
+        if (selLobby) selLobby.value = selGameModeOpt.value;
 
         // Toggle Score Overlay HUD
         const scoreCounterContainer = document.getElementById('score-counter-container');
@@ -1114,6 +1248,9 @@ class WebteeringApp {
     document.getElementById('freeplay-drawer')?.classList.add('hidden');
     document.getElementById('btn-toggle-options')?.classList.add('hidden');
     document.getElementById('lobby-screen')?.classList.remove('hidden');
+
+    this.isLobbyActive = true;
+    this.rebuildLobby3D();
   }
 
   private startRelaxedMode() {
@@ -1121,6 +1258,10 @@ class WebteeringApp {
     this.isTutorial = false;
     this.isFreeplay = false;
     this.controls.isFlightMode = false;
+
+    this.isLobbyActive = false;
+    this.cleanupLobby3D();
+
     this.relaxedStartTime = Date.now();
 
     // 1. Generate random seed
@@ -1169,6 +1310,9 @@ class WebteeringApp {
     document.getElementById('relaxed-mode-banner')?.classList.add('hidden');
     document.getElementById('leaderboard-panel')?.classList.remove('hidden');
     document.getElementById('lobby-screen')?.classList.remove('hidden');
+
+    this.isLobbyActive = true;
+    this.rebuildLobby3D();
   }
 
   // --- CORE TICK UPDATE LOOP INTERACTION ---
@@ -1177,13 +1321,77 @@ class WebteeringApp {
 
     if (this.isLobbyActive) {
       // 1. Slow cinematic orbit camera sway around the party squad pedestals
+      const yCenter = this.terrain.getTerrainHeight(0, 0);
       const angle = Date.now() * 0.00045;
-      this.engine.camera.position.set(Math.sin(angle) * 0.7, 1.8 + Math.sin(angle * 2) * 0.1, 3.2 + Math.cos(angle) * 0.4);
-      this.engine.camera.lookAt(new THREE.Vector3(0, 1.15, -0.3));
+      this.engine.camera.position.set(Math.sin(angle) * 0.7, yCenter + 1.8 + Math.sin(angle * 2) * 0.1, 3.2 + Math.cos(angle) * 0.4);
+      this.engine.camera.lookAt(new THREE.Vector3(0, yCenter + 1.15, -0.3));
 
-      // Rotate player models slowly
-      if (this.lobbyPlayersMeshes[0]) {
-        this.lobbyPlayersMeshes[0].rotation.y += 0.85 * delta;
+      // Real-time day/night cycle progression inside Lobby
+      const selTime = document.getElementById('sel-time') as HTMLSelectElement;
+      if (selTime && selTime.value === 'cycle') {
+        const cycleProgress = (Date.now() * 0.00003) % 3;
+        const times: ('noon' | 'sunset' | 'night')[] = ['noon', 'sunset', 'night'];
+        const activeIdx = Math.floor(cycleProgress);
+        const activeTime = times[activeIdx];
+        
+        if (this.activeTimeOfDayState !== activeTime) {
+          this.activeTimeOfDayState = activeTime;
+          this.engine.setTimeOfDay(activeTime);
+        }
+      }
+
+      // Rotate and animate player models slowly based on active Locker emotes!
+      const myMesh = this.lobbyPlayersMeshes[0];
+      if (myMesh) {
+        const uData = myMesh.userData;
+        const time = Date.now() * 0.001;
+        const selEmote = document.getElementById('sel-lobby-emote') as HTMLSelectElement;
+        const activeEmote = selEmote ? selEmote.value : 'none';
+
+        // Base limb defaults
+        if (uData.leftLeg) uData.leftLeg.rotation.x = 0;
+        if (uData.rightLeg) uData.rightLeg.rotation.x = 0;
+        if (uData.leftArm) {
+          uData.leftArm.rotation.x = 0;
+          uData.leftArm.rotation.z = 0;
+        }
+        if (uData.rightArm) {
+          uData.rightArm.rotation.x = 0;
+          uData.rightArm.rotation.z = 0;
+        }
+        myMesh.position.y = yCenter + 0.15; // default height
+
+        if (activeEmote === 'wave') {
+          myMesh.rotation.y += 0.85 * delta;
+          if (uData.rightArm) {
+            uData.rightArm.rotation.z = 2.4; // raise right arm
+            uData.rightArm.rotation.x = Math.sin(time * 10.0) * 0.45; // wave motion
+          }
+        } else if (activeEmote === 'jump') {
+          // Jump and spin!
+          const jumpCycle = time * 4.5;
+          const jumpHeight = Math.max(0, Math.sin(jumpCycle)) * 0.45;
+          myMesh.position.y = yCenter + 0.15 + jumpHeight;
+          myMesh.rotation.y += 6.8 * delta; // rapid spin!
+
+          const spread = jumpHeight > 0.05 ? 0.35 : 0.0;
+          if (uData.leftLeg) uData.leftLeg.rotation.z = spread;
+          if (uData.rightLeg) uData.rightLeg.rotation.z = -spread;
+          if (uData.leftArm) uData.leftArm.rotation.z = spread;
+          if (uData.rightArm) uData.rightArm.rotation.z = -spread;
+        } else if (activeEmote === 'dance') {
+          // Hip-sway dance
+          const sway = Math.sin(time * 6.0);
+          myMesh.rotation.y += sway * 0.45 * delta;
+          
+          if (uData.leftArm) uData.leftArm.rotation.x = sway * 0.8;
+          if (uData.rightArm) uData.rightArm.rotation.x = -sway * 0.8;
+          if (uData.leftLeg) uData.leftLeg.rotation.x = -sway * 0.45;
+          if (uData.rightLeg) uData.rightLeg.rotation.x = sway * 0.45;
+        } else {
+          // Stand tall with standard slow rotation
+          myMesh.rotation.y += 0.85 * delta;
+        }
       }
 
       // Animate instanced foliage and terrain background visuals
@@ -1239,9 +1447,39 @@ class WebteeringApp {
       this.headlamp.target.updateMatrixWorld();
     }
 
+    // In-game dynamic day/night cycle progression
+    const selTime = document.getElementById('sel-time') as HTMLSelectElement;
+    if (selTime && selTime.value === 'cycle') {
+      const cycleProgress = (Date.now() * 0.00003) % 3;
+      const times: ('noon' | 'sunset' | 'night')[] = ['noon', 'sunset', 'night'];
+      const activeIdx = Math.floor(cycleProgress);
+      const activeTime = times[activeIdx];
+      
+      if (this.activeTimeOfDayState !== activeTime) {
+        this.activeTimeOfDayState = activeTime;
+        this.engine.setTimeOfDay(activeTime);
+        
+        // Dynamically toggle night flashlight spot!
+        if (activeTime === 'night') {
+          if (!this.headlamp) {
+            this.headlamp = new THREE.SpotLight(0xffffff, 4.0, 45, Math.PI / 5, 0.5, 1.0);
+            this.headlamp.castShadow = true;
+            this.headlamp.shadow.bias = -0.002;
+            this.engine.scene.add(this.headlamp);
+          }
+        } else {
+          if (this.headlamp) {
+            this.engine.scene.remove(this.headlamp);
+            this.headlamp = null;
+          }
+        }
+      }
+    }
+
     // 2. Broadcast position to server if in active lobby
     if (this.activeRoomId && this.roomState && this.roomState.status === 'racing') {
-      const anim = this.isSwimming ? 'swim' : (this.controls.position.length() > 0.05 ? 'run' : 'idle');
+      const isMoving = this.controls.getSpeedFactor() > 0.05;
+      const anim = this.isSwimming ? 'swim' : (isMoving ? 'run' : 'idle');
       this.network.sendPosition(
         this.controls.position.x,
         this.controls.position.y,
@@ -1257,8 +1495,8 @@ class WebteeringApp {
 
     // Animate instanced foliage swaying and water surface ripples
     const time = Date.now() * 0.001;
-    this.foliage.update(time);
-    this.terrain.update(time);
+    this.foliage.update(time, this.controls.position);
+    this.terrain.update(time, this.controls.position);
 
     // Sync locally tracked swimming state
     this.isSwimming = (this.terrain.getTerrainType(this.controls.position.x, this.controls.position.z) === 'water');
@@ -1319,6 +1557,11 @@ class WebteeringApp {
     const isGrounded = this.controls.getIsGrounded();
     this.hud.updateCompass(yaw, delta, speedFactor, isGrounded, this.controls.isExhausted);
 
+    // Update procedural wildlife positions
+    if (this.wildlife) {
+      this.wildlife.update(delta, this.controls.position);
+    }
+
     // Manual Map Rotation Q/R key hooks
     if (this.hud.mapMode === 'manual') {
       if (this.keysPressed['KeyQ']) {
@@ -1373,6 +1616,19 @@ class WebteeringApp {
       yaw,
       otherState
     );
+
+    // Draw Dynamic Mini-map and Top Sliding Compass strip
+    const courseData = this.getActiveCourseAndPunched();
+    this.hud.updateMinimap(
+      this.terrain.getMapSize(),
+      this.controls.position.x,
+      this.controls.position.z,
+      yaw,
+      courseData.course,
+      courseData.punched,
+      otherState
+    );
+    this.hud.drawCompassStrip(yaw);
 
     // 5. Proximity triggers (Checkpoint punches range verification)
     this.evaluateCheckpointProximity();
@@ -1833,6 +2089,29 @@ class WebteeringApp {
         mat.opacity = 0.35 * (1.0 - puff.age / puff.maxAge);
       }
     }
+  }
+
+  private getActiveCourseAndPunched(): { course: Checkpoint[]; punched: number[] } {
+    let course: Checkpoint[] = [];
+    let punched: number[] = [];
+
+    if (this.roomState) {
+      course = this.roomState.course;
+      const localP = this.roomState.players[this.localPlayerId || ''];
+      if (localP) {
+        punched = localP.punchedCheckpoints || [];
+      }
+    } else {
+      course = this.activeCourse || [];
+      if (this.isRelaxed) {
+        punched = this.relaxedPunchedCps || [];
+      } else if (this.isFreeplay) {
+        punched = [];
+      } else {
+        punched = this.rogainePunchedCps || [];
+      }
+    }
+    return { course, punched };
   }
 }
 

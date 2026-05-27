@@ -186,33 +186,214 @@ export class Elements {
   // --- MULTIPLAYER OTHER RUNNERS SYNCHRONIZATION ---
 
   // Build a charming voxel character skin model
-  public buildVoxelRunner(colorHex: string): THREE.Group {
+  public buildVoxelRunner(customizationString: string): THREE.Group {
     const runner = new THREE.Group();
+
+    // 1. Parse customization options from string (format: "#ff3333|spiky|solid|none")
+    const parts = (customizationString || '').split('|');
+    const colorHex = parts[0] || '#ff3333';
+    const hairStyle = parts[1] || 'spiky';
+    const torsoPattern = parts[2] || 'solid';
+    const accessory = parts[3] || 'none';
 
     // Materials
     const skinMat = new THREE.MeshLambertMaterial({ color: 0xffdbac }); // light beige head
     const jerseyMat = new THREE.MeshLambertMaterial({ color: new THREE.Color(colorHex) });
-    const pantsMat = new THREE.MeshLambertMaterial({ color: 0x222222 }); // black pants
+    const whiteMat = new THREE.MeshLambertMaterial({ color: 0xf3f4f6 }); // crisp white
+    const darkMat = new THREE.MeshLambertMaterial({ color: 0x1e293b }); // slate dark
+    const pantsMat = new THREE.MeshLambertMaterial({ color: 0x111827 }); // black pants
+    const hairMatColor = hairStyle === 'mohawk' ? 0xff007f : 0x472f17; // Mohawk neon pink, others brown
+    const hairMat = new THREE.MeshLambertMaterial({ color: hairMatColor });
+    const neonVisorMat = new THREE.MeshStandardMaterial({
+      color: 0x00ffff,
+      emissive: 0x00ffff,
+      emissiveIntensity: 0.8,
+      transparent: true,
+      opacity: 0.75
+    });
 
-    // 1. Torso
-    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.8, 0.4), jerseyMat);
-    torso.position.y = 0.9;
-    torso.castShadow = true;
-    torso.receiveShadow = true;
-    runner.add(torso);
+    // 2. Render Torso based on Torso Pattern
+    const torsoGroup = new THREE.Group();
+    torsoGroup.position.set(0, 0.9, 0);
 
-    // 2. Head
+    if (torsoPattern === 'solid') {
+      const torso = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.8, 0.4), jerseyMat);
+      torso.castShadow = true;
+      torso.receiveShadow = true;
+      torsoGroup.add(torso);
+    } else if (torsoPattern === 'stripes') {
+      // 3 vertical stripes
+      const stripeW = 0.2;
+      const leftStripe = new THREE.Mesh(new THREE.BoxGeometry(stripeW, 0.8, 0.4), jerseyMat);
+      leftStripe.position.x = -0.2;
+      leftStripe.castShadow = true;
+      leftStripe.receiveShadow = true;
+      torsoGroup.add(leftStripe);
+
+      const centerStripe = new THREE.Mesh(new THREE.BoxGeometry(stripeW, 0.8, 0.4), whiteMat);
+      centerStripe.position.x = 0;
+      centerStripe.castShadow = true;
+      centerStripe.receiveShadow = true;
+      torsoGroup.add(centerStripe);
+
+      const rightStripe = new THREE.Mesh(new THREE.BoxGeometry(stripeW, 0.8, 0.4), jerseyMat);
+      rightStripe.position.x = 0.2;
+      rightStripe.castShadow = true;
+      rightStripe.receiveShadow = true;
+      torsoGroup.add(rightStripe);
+    } else if (torsoPattern === 'sash') {
+      // Base Solid Torso
+      const torso = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.8, 0.4), jerseyMat);
+      torso.castShadow = true;
+      torso.receiveShadow = true;
+      torsoGroup.add(torso);
+
+      // Diagonal Sash
+      const sash = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.12, 0.43), whiteMat);
+      sash.rotation.z = -0.55;
+      sash.position.set(0, 0, 0.005);
+      sash.castShadow = true;
+      torsoGroup.add(sash);
+    } else if (torsoPattern === 'checkerboard') {
+      // 2x2 grid blocks
+      const blockW = 0.3;
+      const blockH = 0.4;
+      
+      const tl = new THREE.Mesh(new THREE.BoxGeometry(blockW, blockH, 0.4), jerseyMat);
+      tl.position.set(-0.15, 0.2, 0);
+      tl.castShadow = true;
+      tl.receiveShadow = true;
+      torsoGroup.add(tl);
+
+      const tr = new THREE.Mesh(new THREE.BoxGeometry(blockW, blockH, 0.4), whiteMat);
+      tr.position.set(0.15, 0.2, 0);
+      tr.castShadow = true;
+      tr.receiveShadow = true;
+      torsoGroup.add(tr);
+
+      const bl = new THREE.Mesh(new THREE.BoxGeometry(blockW, blockH, 0.4), whiteMat);
+      bl.position.set(-0.15, -0.2, 0);
+      bl.castShadow = true;
+      bl.receiveShadow = true;
+      torsoGroup.add(bl);
+
+      const br = new THREE.Mesh(new THREE.BoxGeometry(blockW, blockH, 0.4), jerseyMat);
+      br.position.set(0.15, -0.2, 0);
+      br.castShadow = true;
+      br.receiveShadow = true;
+      torsoGroup.add(br);
+    }
+    
+    runner.add(torsoGroup);
+
+    // 3. Head
     const head = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), skinMat);
     head.position.y = 1.5;
     head.castShadow = true;
     runner.add(head);
 
-    // Hair voxel
-    const hair = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.15, 0.42), new THREE.MeshLambertMaterial({ color: 0x332211 }));
-    hair.position.set(0, 1.63, -0.01);
-    runner.add(hair);
+    // 4. Render Hair Styles
+    if (hairStyle === 'spiky') {
+      // Scattered hair voxels
+      const hairGeom = new THREE.BoxGeometry(0.42, 0.12, 0.42);
+      const hairBase = new THREE.Mesh(hairGeom, hairMat);
+      hairBase.position.set(0, 1.63, -0.01);
+      runner.add(hairBase);
 
-    // 3. Legs
+      const spike1 = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.12), hairMat);
+      spike1.position.set(0.1, 1.7, 0.08);
+      runner.add(spike1);
+
+      const spike2 = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.12), hairMat);
+      spike2.position.set(-0.12, 1.7, 0.08);
+      runner.add(spike2);
+
+      const spike3 = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.12), hairMat);
+      spike3.position.set(0, 1.68, -0.15);
+      runner.add(spike3);
+
+      const fringe = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.08, 0.08), hairMat);
+      fringe.position.set(0, 1.65, 0.205);
+      runner.add(fringe);
+    } else if (hairStyle === 'cap') {
+      // Baseball cap
+      const capMat = new THREE.MeshLambertMaterial({ color: 0xef4444 }); // red cap
+      const capBase = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.16, 0.42), capMat);
+      capBase.position.set(0, 1.68, -0.01);
+      runner.add(capBase);
+
+      // Visor visor facing backward! (Z > 0)
+      const capVisor = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.04, 0.22), capMat);
+      capVisor.position.set(0, 1.63, 0.28);
+      runner.add(capVisor);
+    } else if (hairStyle === 'ponytail') {
+      const hairBase = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.18, 0.42), hairMat);
+      hairBase.position.set(0, 1.63, -0.01);
+      runner.add(hairBase);
+
+      // Hanging Tail
+      const tail = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.32, 0.12), hairMat);
+      tail.position.set(0, 1.45, 0.24);
+      tail.rotation.x = 0.2; // angled out
+      runner.add(tail);
+    } else if (hairStyle === 'mohawk') {
+      const mohawk = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.18, 0.44), hairMat);
+      mohawk.position.set(0, 1.74, 0);
+      runner.add(mohawk);
+    } else if (hairStyle === 'bald') {
+      // Shaved bald but with a vibrant running sweatband
+      const sweatbandMat = new THREE.MeshLambertMaterial({ color: 0xfffaed }); // sweatband
+      const sweatband = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.08, 0.42), sweatbandMat);
+      sweatband.position.set(0, 1.58, 0);
+      runner.add(sweatband);
+    }
+
+    // 5. Render Accessories
+    if (accessory === 'visor') {
+      // Translucent glowing visor
+      const visor = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.1, 0.44), neonVisorMat);
+      visor.position.set(0, 1.51, 0);
+      runner.add(visor);
+
+      const lens = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.12, 0.12), new THREE.MeshStandardMaterial({
+        color: 0x00ffff,
+        transparent: true,
+        opacity: 0.9,
+        metalness: 0.9,
+        roughness: 0.1
+      }));
+      lens.position.set(0, 1.51, -0.21);
+      runner.add(lens);
+    } else if (accessory === 'headphones') {
+      // Over-Ear gaming chimes
+      const band = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.05, 0.12), darkMat);
+      band.position.set(0, 1.72, 0);
+      runner.add(band);
+
+      const leftCup = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.18, 0.18), jerseyMat);
+      leftCup.position.set(-0.22, 1.50, 0);
+      runner.add(leftCup);
+
+      const rightCup = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.18, 0.18), jerseyMat);
+      rightCup.position.set(0.22, 1.50, 0);
+      runner.add(rightCup);
+    } else if (accessory === 'glasses') {
+      // Black spectacles
+      const glassFrameMat = new THREE.MeshLambertMaterial({ color: 0x000000 });
+      const leftRim = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 0.02), glassFrameMat);
+      leftRim.position.set(-0.1, 1.51, -0.21);
+      runner.add(leftRim);
+
+      const rightRim = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 0.02), glassFrameMat);
+      rightRim.position.set(0.1, 1.51, -0.21);
+      runner.add(rightRim);
+
+      const bridge = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.03, 0.02), glassFrameMat);
+      bridge.position.set(0, 1.53, -0.21);
+      runner.add(bridge);
+    }
+
+    // 6. Legs
     const leftLeg = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.5, 0.2), pantsMat);
     leftLeg.position.set(-0.18, 0.25, 0);
     leftLeg.castShadow = true;
@@ -223,7 +404,7 @@ export class Elements {
     rightLeg.castShadow = true;
     runner.add(rightLeg);
 
-    // 4. Arms
+    // 7. Arms
     const leftArm = new THREE.Group();
     leftArm.position.set(-0.38, 1.2, 0);
     const leftArmMesh = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.6, 0.18), jerseyMat);

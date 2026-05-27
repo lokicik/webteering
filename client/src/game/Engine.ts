@@ -19,9 +19,17 @@ export class Engine {
 
   // Weather Realism systems
   private rainActive = false;
-  private rainMesh: THREE.LineSegments | null = null;
-  private rainGeometry!: THREE.BufferGeometry;
-  private rainPositions!: Float32Array;
+  private weatherMesh: THREE.Object3D | null = null;
+  private weatherGeometry!: THREE.BufferGeometry;
+  private weatherPositions!: Float32Array;
+  private isSnowMode = false;
+  private terrain: any = null;
+
+  private cloudsGroup = new THREE.Group();
+
+  public setTerrain(terrain: any) {
+    this.terrain = terrain;
+  }
 
   private lightningIntensity = 0.0;
   private lightningChance = 0.0018; // probability per frame
@@ -58,6 +66,9 @@ export class Engine {
 
     // Default Atmospheric Fog
     this.scene.fog = new THREE.FogExp2(0x0c0f18, 0.015);
+
+    // Initialise low-poly voxel clouds
+    this.initClouds();
   }
 
   private initLights() {
@@ -188,108 +199,192 @@ export class Engine {
     }
   }
 
-  // Create or destroy dynamic falling instanced rain needles
+  // Create or destroy dynamic falling instanced weather particles (Rain / Snow)
   public setRainActive(active: boolean) {
     this.rainActive = active;
     
     if (active) {
-      if (this.rainMesh) return;
+      if (this.weatherMesh) return;
       
-      const vertexCount = 1200; // dense rain needles box
-      this.rainGeometry = new THREE.BufferGeometry();
-      this.rainPositions = new Float32Array(vertexCount * 3 * 2);
+      const biome = this.terrain ? this.terrain.getBiome() : 'alpine';
+      this.isSnowMode = (biome === 'alpine');
       
-      for (let i = 0; i < vertexCount; i++) {
-        const rx = (Math.random() - 0.5) * 45;
-        const ry = Math.random() * 32;
-        const rz = (Math.random() - 0.5) * 45;
+      const vertexCount = 1200;
+      this.weatherGeometry = new THREE.BufferGeometry();
+      
+      if (this.isSnowMode) {
+        // Snow mode: individual drifting points
+        this.weatherPositions = new Float32Array(vertexCount * 3);
+        for (let i = 0; i < vertexCount; i++) {
+          this.weatherPositions[i*3] = (Math.random() - 0.5) * 45;
+          this.weatherPositions[i*3+1] = Math.random() * 32;
+          this.weatherPositions[i*3+2] = (Math.random() - 0.5) * 45;
+        }
+        this.weatherGeometry.setAttribute('position', new THREE.BufferAttribute(this.weatherPositions, 3));
         
-        const idx = i * 6;
-        this.rainPositions[idx] = rx;
-        this.rainPositions[idx+1] = ry;
-        this.rainPositions[idx+2] = rz;
+        // Beautiful, soft circular fluffy white snow particle texture
+        const canvas = document.createElement('canvas');
+        canvas.width = 16;
+        canvas.height = 16;
+        const pCtx = canvas.getContext('2d')!;
+        const grad = pCtx.createRadialGradient(8, 8, 0, 8, 8, 8);
+        grad.addColorStop(0, 'rgba(255, 255, 255, 1)');
+        grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        pCtx.fillStyle = grad;
+        pCtx.fillRect(0, 0, 16, 16);
+        const texture = new THREE.CanvasTexture(canvas);
+
+        const snowMaterial = new THREE.PointsMaterial({
+          color: 0xffffff,
+          size: 0.35,
+          map: texture,
+          transparent: true,
+          opacity: 0.85,
+          blending: THREE.NormalBlending,
+          depthWrite: false
+        });
         
-        this.rainPositions[idx+3] = rx;
-        this.rainPositions[idx+4] = ry - 0.8; // needle streak length
-        this.rainPositions[idx+5] = rz;
+        this.weatherMesh = new THREE.Points(this.weatherGeometry, snowMaterial);
+        this.scene.add(this.weatherMesh);
+      } else {
+        // Rain mode: line segment needles
+        this.weatherPositions = new Float32Array(vertexCount * 3 * 2);
+        for (let i = 0; i < vertexCount; i++) {
+          const rx = (Math.random() - 0.5) * 45;
+          const ry = Math.random() * 32;
+          const rz = (Math.random() - 0.5) * 45;
+          
+          const idx = i * 6;
+          this.weatherPositions[idx] = rx;
+          this.weatherPositions[idx+1] = ry;
+          this.weatherPositions[idx+2] = rz;
+          
+          this.weatherPositions[idx+3] = rx;
+          this.weatherPositions[idx+4] = ry - 0.8;
+          this.weatherPositions[idx+5] = rz;
+        }
+        this.weatherGeometry.setAttribute('position', new THREE.BufferAttribute(this.weatherPositions, 3));
+        
+        const rainMaterial = new THREE.LineBasicMaterial({
+          color: 0x88aacc,
+          transparent: true,
+          opacity: 0.55,
+          depthWrite: false
+        });
+        
+        this.weatherMesh = new THREE.LineSegments(this.weatherGeometry, rainMaterial);
+        this.scene.add(this.weatherMesh);
       }
-      
-      this.rainGeometry.setAttribute('position', new THREE.BufferAttribute(this.rainPositions, 3));
-      
-      const rainMaterial = new THREE.LineBasicMaterial({
-        color: 0x88aacc,
-        transparent: true,
-        opacity: 0.55,
-        depthWrite: false
-      });
-      
-      this.rainMesh = new THREE.LineSegments(this.rainGeometry, rainMaterial);
-      this.scene.add(this.rainMesh);
     } else {
-      if (!this.rainMesh) return;
-      this.scene.remove(this.rainMesh);
-      this.rainGeometry.dispose();
-      (this.rainMesh.material as THREE.Material).dispose();
-      this.rainMesh = null;
+      if (!this.weatherMesh) return;
+      this.scene.remove(this.weatherMesh);
+      this.weatherGeometry.dispose();
+      if (this.weatherMesh instanceof THREE.Points) {
+        ((this.weatherMesh as any).material as THREE.PointsMaterial).map?.dispose();
+      }
+      ((this.weatherMesh as any).material as THREE.Material).dispose();
+      this.weatherMesh = null;
     }
   }
 
-  // Fall rain box around player and trigger random lightning flash/thunders
+  // Fall weather box around player and trigger random lightning flash/thunders
   private updateWeather(delta: number) {
-    if (this.rainActive && this.rainMesh) {
-      // Center rain box on player camera position
-      this.rainMesh.position.set(this.camera.position.x, 0, this.camera.position.z);
+    if (this.rainActive && this.weatherMesh) {
+      // Center weather box on player camera position
+      this.weatherMesh.position.set(this.camera.position.x, 0, this.camera.position.z);
       
-      const posAttr = this.rainGeometry.getAttribute('position') as THREE.BufferAttribute;
+      const posAttr = this.weatherGeometry.getAttribute('position') as THREE.BufferAttribute;
       const array = posAttr.array as Float32Array;
-      const count = posAttr.count / 2; // number of needles
       
-      for (let i = 0; i < count; i++) {
-        const idx = i * 6;
-        
-        // Falling motion
-        array[idx+1] -= 22 * delta;
-        array[idx+4] -= 22 * delta;
-        
-        // Reset top if falls below ground
-        if (array[idx+1] < 0) {
-          const rx = (Math.random() - 0.5) * 45;
-          const ry = 30 + Math.random() * 5;
-          const rz = (Math.random() - 0.5) * 45;
+      if (this.isSnowMode) {
+        const count = posAttr.count; // number of snow particles
+        for (let i = 0; i < count; i++) {
+          const idx = i * 3;
           
-          array[idx] = rx;
-          array[idx+1] = ry;
-          array[idx+2] = rz;
+          // Slow drifting falling motion + gentle swaying wind drift
+          array[idx+1] -= 3.8 * delta; // slow fall (3.8 m/s)
+          array[idx] += Math.sin(this.clock.getElapsedTime() + idx) * 0.8 * delta; // sway drift
           
-          array[idx+3] = rx;
-          array[idx+4] = ry - 0.8;
-          array[idx+5] = rz;
+          const rx = array[idx];
+          const rz = array[idx+2];
+          
+          // Determine local terrain height for collisions
+          let terrainY = 0;
+          if (this.terrain) {
+            const worldX = this.camera.position.x + rx;
+            const worldZ = this.camera.position.z + rz;
+            terrainY = this.terrain.getTerrainHeight(worldX, worldZ);
+          }
+          
+          // Reset top if falls below terrain ground height
+          if (array[idx+1] < terrainY) {
+            array[idx] = (Math.random() - 0.5) * 45;
+            array[idx+1] = 25 + Math.random() * 7; // restart high in the sky
+            array[idx+2] = (Math.random() - 0.5) * 45;
+          }
+        }
+      } else {
+        const count = posAttr.count / 2; // number of rain needles
+        for (let i = 0; i < count; i++) {
+          const idx = i * 6;
+          
+          // Fast falling motion
+          array[idx+1] -= 22 * delta;
+          array[idx+4] -= 22 * delta;
+          
+          const rx = array[idx];
+          const rz = array[idx+2];
+          
+          // Determine local terrain height for collisions
+          let terrainY = 0;
+          if (this.terrain) {
+            const worldX = this.camera.position.x + rx;
+            const worldZ = this.camera.position.z + rz;
+            terrainY = this.terrain.getTerrainHeight(worldX, worldZ);
+          }
+          
+          // Reset top if falls below terrain ground height
+          if (array[idx+1] < terrainY) {
+            const newRx = (Math.random() - 0.5) * 45;
+            const newRy = 25 + Math.random() * 7;
+            const newRz = (Math.random() - 0.5) * 45;
+            
+            array[idx] = newRx;
+            array[idx+1] = newRy;
+            array[idx+2] = newRz;
+            
+            array[idx+3] = newRx;
+            array[idx+4] = newRy - 0.8;
+            array[idx+5] = newRz;
+          }
         }
       }
       posAttr.needsUpdate = true;
 
-      // 2. Storm Lightning Flash Simulation
-      if (this.lightningIntensity <= 0.0) {
-        if (Math.random() < this.lightningChance) {
-          this.lightningIntensity = 1.0;
-          Sound.playThunder();
-        }
-      } else {
-        this.lightningIntensity -= delta * 3.8; // rapid flash decay
-        if (this.lightningIntensity < 0.0) {
-          this.lightningIntensity = 0.0;
-        }
-        
-        const flashVal = this.lightningIntensity;
-        this.ambientLight.intensity = this.baseAmbientIntensity + flashVal * 2.8;
-        this.sunLight.intensity = this.baseSunIntensity + flashVal * 2.5;
-        
-        const skyColor = new THREE.Color().lerpColors(this.baseBgColor, new THREE.Color(0xffffff), flashVal * 0.85);
-        this.scene.background = skyColor;
-        
-        const fog = this.scene.fog as THREE.FogExp2;
-        if (fog) {
-          fog.color.copy(skyColor);
+      // 2. Storm Lightning Flash Simulation (only if rain, thunder looks weird in snow!)
+      if (!this.isSnowMode) {
+        if (this.lightningIntensity <= 0.0) {
+          if (Math.random() < this.lightningChance) {
+            this.lightningIntensity = 1.0;
+            Sound.playThunder();
+          }
+        } else {
+          this.lightningIntensity -= delta * 3.8; // rapid flash decay
+          if (this.lightningIntensity < 0.0) {
+            this.lightningIntensity = 0.0;
+          }
+          
+          const flashVal = this.lightningIntensity;
+          this.ambientLight.intensity = this.baseAmbientIntensity + flashVal * 2.8;
+          this.sunLight.intensity = this.baseSunIntensity + flashVal * 2.5;
+          
+          const skyColor = new THREE.Color().lerpColors(this.baseBgColor, new THREE.Color(0xffffff), flashVal * 0.85);
+          this.scene.background = skyColor;
+          
+          const fog = this.scene.fog as THREE.FogExp2;
+          if (fog) {
+            fog.color.copy(skyColor);
+          }
         }
       }
     } else {
@@ -323,10 +418,75 @@ export class Engine {
       // Animate falling rain box and thunder cracks
       this.updateWeather(delta);
 
+      // Animate low-poly sky clouds
+      this.updateClouds(delta);
+
       this.renderer.render(this.scene, this.camera);
     };
 
     animate();
+  }
+
+  private initClouds() {
+    this.scene.add(this.cloudsGroup);
+    
+    // Spawn 10 procedural low-poly voxel clouds
+    const cloudMat = new THREE.MeshLambertMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.88,
+      shadowSide: THREE.DoubleSide
+    });
+
+    const cloudCount = 10;
+    for (let c = 0; c < cloudCount; c++) {
+      const cloud = new THREE.Group();
+      
+      // Assemble intersecting boxes for fluffy low-poly look
+      const boxesCount = 3 + Math.floor(Math.random() * 4);
+      for (let b = 0; b < boxesCount; b++) {
+        const w = 8 + Math.random() * 12;
+        const h = 4 + Math.random() * 4;
+        const d = 6 + Math.random() * 8;
+        
+        const box = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), cloudMat);
+        box.position.set(
+          (Math.random() - 0.5) * 6,
+          (Math.random() - 0.5) * 2,
+          (Math.random() - 0.5) * 6
+        );
+        box.castShadow = true;
+        cloud.add(box);
+      }
+
+      // Random position in sky
+      const cx = (Math.random() - 0.5) * 350;
+      const cy = 40 + Math.random() * 10;
+      const cz = (Math.random() - 0.5) * 350;
+      cloud.position.set(cx, cy, cz);
+      
+      // Store drift velocity
+      cloud.userData = {
+        vx: 0.8 + Math.random() * 1.5,
+        vz: (Math.random() - 0.5) * 0.4
+      };
+
+      this.cloudsGroup.add(cloud);
+    }
+  }
+
+  private updateClouds(delta: number) {
+    this.cloudsGroup.children.forEach(c => {
+      const cloud = c as THREE.Group;
+      cloud.position.x += cloud.userData.vx * delta;
+      cloud.position.z += cloud.userData.vz * delta;
+
+      // Wrap boundaries
+      const halfMap = 200;
+      if (cloud.position.x > halfMap) cloud.position.x = -halfMap;
+      if (cloud.position.z > halfMap) cloud.position.z = -halfMap;
+      if (cloud.position.z < -halfMap) cloud.position.z = halfMap;
+    });
   }
 
   public dispose() {

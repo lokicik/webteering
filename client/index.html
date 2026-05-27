@@ -169,14 +169,17 @@
                 <option value="noon">Sunny Noon</option>
                 <option value="sunset">Sunset Glow</option>
                 <option value="night">Spooky Night (Headlamp)</option>
+                <option value="cycle">Dynamic Time Cycle 🌅</option>
               </select>
             </div>
 
             <div class="form-group-sm">
-              <label>Game Type</label>
-              <select id="sel-game-mode">
-                <option value="classic">Classic (Sequential)</option>
-                <option value="rogaine">Rogaine (Free Order)</option>
+              <label>Game Mode</label>
+              <select id="sel-game-mode-lobby">
+                <option value="classic">Classic Sequential Race</option>
+                <option value="rogaine">Rogaine Free-Order Run</option>
+                <option value="relaxed">Relaxed Blind Search</option>
+                <option value="tutorial">Interactive Training Tutorial</option>
               </select>
             </div>
 
@@ -239,6 +242,57 @@
               <button class="color-btn" style="background-color: #e033ff;" data-color="#e033ff"></button>
               <button class="color-btn" style="background-color: #ffffff;" data-color="#ffffff"></button>
             </div>
+          </div>
+
+          <div class="form-group-locker">
+            <label for="sel-hair-style">Hair Style</label>
+            <select id="sel-hair-style" class="form-control-locker">
+              <option value="spiky" selected>Retro Spiky Voxel</option>
+              <option value="cap">Backward Baseball Cap</option>
+              <option value="ponytail">Long Bouncing Ponytail</option>
+              <option value="mohawk">Neon Punk Mohawk</option>
+              <option value="bald">Clean Shaved (Sweatband)</option>
+            </select>
+          </div>
+
+          <div class="form-group-locker">
+            <label for="sel-torso-pattern">Jersey Prints</label>
+            <select id="sel-torso-pattern" class="form-control-locker">
+              <option value="solid" selected>Solid Athletic Team</option>
+              <option value="stripes">Dual Vertical Stripes</option>
+              <option value="sash">Sleek Diagonal Sash</option>
+              <option value="checkerboard">Retro Voxel Checkerboard</option>
+            </select>
+          </div>
+
+          <div class="form-group-locker">
+            <label for="sel-accessory">Runner Accessories</label>
+            <select id="sel-accessory" class="form-control-locker">
+              <option value="none" selected>None (Clean Run)</option>
+              <option value="visor">Cyber Navigation Visor 🕶️</option>
+              <option value="headphones">Over-Ear Pro Headphones 🎧</option>
+              <option value="glasses">Geek Spectacles 🤓</option>
+            </select>
+          </div>
+
+          <div class="form-group-locker">
+            <label for="sel-lobby-emote">Lobby Emote Action</label>
+            <select id="sel-lobby-emote" class="form-control-locker">
+              <option value="none" selected>None (Standing Tall)</option>
+              <option value="wave">Wave call sign 👋</option>
+              <option value="jump">Victory Jump spin 🏆</option>
+              <option value="dance">Rhythmic Voxel Sway 🕺</option>
+            </select>
+          </div>
+
+          <div class="form-group-locker">
+            <label for="sel-soundtrack">Lobby Radio (Soundtrack)</label>
+            <select id="sel-soundtrack" class="form-control-locker">
+              <option value="none" selected>Radio: Muted 🔇</option>
+              <option value="ambient">Ambient Sine Chimes 🎵</option>
+              <option value="chill">Chill Analog Pads 🎧</option>
+              <option value="upbeat">Upbeat Morning Sunrise 🌅</option>
+            </select>
           </div>
           
           <div class="quick-runs-section">
@@ -391,6 +445,17 @@
 
   <!-- In-game HUD Overlays -->
   <div id="hud-container" class="hidden">
+    <!-- Horizontal Sliding Compass Strip -->
+    <div id="hud-compass-strip-container" style="position: absolute; top: 12px; left: 50%; transform: translateX(-50%); width: 360px; height: 36px; background: rgba(12, 15, 24, 0.72); border: 1.5px solid rgba(255, 255, 255, 0.12); border-radius: 18px; backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; overflow: hidden; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.55); z-index: 100;">
+      <div style="position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: 2px; height: 100%; background: #ffaa00; z-index: 10; box-shadow: 0 0 6px #ffaa00;"></div>
+      <canvas id="hud-compass-strip-canvas" width="360" height="36" style="width: 100%; height: 100%;"></canvas>
+    </div>
+
+    <!-- Circular Rotating Topographic Radar HUD -->
+    <div id="minimap-container" style="position: absolute; top: 12px; right: 12px; width: 140px; height: 140px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.18); background: rgba(12, 15, 24, 0.65); box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4); overflow: hidden; backdrop-filter: blur(8px); z-index: 99;">
+      <canvas id="minimap-canvas" width="140" height="140" style="width: 100%; height: 100%;"></canvas>
+      <div class="minimap-player-dot" style="position: absolute; top: 50%; left: 50%; width: 6px; height: 6px; background: #00ccff; border: 1.5px solid #ffffff; border-radius: 50%; transform: translate(-50%, -50%); box-shadow: 0 0 6px #00ccff; z-index: 10;"></div>
+    </div>
     <!-- Top Countdown / Race Status Banner -->
     <div id="race-status-banner">
       <h1 id="status-msg" class="pulse">WAITING</h1>
@@ -500,7 +565,7 @@
         </div>
         <div class="form-group-sm">
           <label>Game Mode</label>
-          <select id="sel-game-mode">
+          <select id="sel-game-mode-ingame">
             <option value="classic">Classic (Sequential)</option>
             <option value="rogaine">Rogaine (Free Order)</option>
           </select>
@@ -515,6 +580,7 @@
             <option value="noon">Sunny Noon</option>
             <option value="sunset">Sunset Glow</option>
             <option value="night">Spooky Night (Headlamp)</option>
+            <option value="cycle">Dynamic Time Cycle 🌅</option>
           </select>
         </div>
         <div class="form-group-sm">

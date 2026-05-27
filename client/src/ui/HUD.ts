@@ -19,6 +19,12 @@ export class HUD {
   public mapCanvas = document.getElementById('topo-map-canvas') as HTMLCanvasElement;
   private mapCtx!: CanvasRenderingContext2D;
   private offscreenMapCanvas!: HTMLCanvasElement;
+
+  private compassStripCanvas = document.getElementById('hud-compass-strip-canvas') as HTMLCanvasElement;
+  private compassStripCtx: CanvasRenderingContext2D | null = null;
+
+  private minimapCanvas = document.getElementById('minimap-canvas') as HTMLCanvasElement;
+  private minimapCtx: CanvasRenderingContext2D | null = null;
   
   // Game states references
   private activeTargetIndex = 0;
@@ -42,6 +48,9 @@ export class HUD {
   constructor() {
     this.mapCtx = this.mapCanvas.getContext('2d')!;
     this.offscreenMapCanvas = document.createElement('canvas');
+    
+    this.compassStripCtx = this.compassStripCanvas?.getContext('2d') || null;
+    this.minimapCtx = this.minimapCanvas?.getContext('2d') || null;
     
     // Inject the Silva orienting arrow div inside the bezel housing
     if (this.bezelEl) {
@@ -342,8 +351,10 @@ export class HUD {
     otherPlayers: { [id: string]: PlayerState }
   ) {
     const size = terrainSize;
-    this.mapCanvas.width = size;
-    this.mapCanvas.height = size;
+    if (this.mapCanvas.width !== size || this.mapCanvas.height !== size) {
+      this.mapCanvas.width = size;
+      this.mapCanvas.height = size;
+    }
     
     // Draw cached static background map
     this.mapCtx.drawImage(this.offscreenMapCanvas, 0, 0);
@@ -607,5 +618,196 @@ export class HUD {
       ctx.stroke();
       ctx.restore();
     }
+  }
+
+  public drawCompassStrip(cameraYaw: number) {
+    if (!this.compassStripCanvas || !this.compassStripCtx) return;
+
+    const ctx = this.compassStripCtx;
+    const width = this.compassStripCanvas.width;
+    const height = this.compassStripCanvas.height;
+
+    // Clear background
+    ctx.clearRect(0, 0, width, height);
+
+    // Dynamic camera yaw heading in degrees (0 to 360, where 0 is North)
+    const headingDeg = ((-cameraYaw * 180) / Math.PI + 360) % 360;
+
+    // Drawing parameters
+    const degreesPerPixel = 0.5; // 180 degrees fits in 360px width
+    const centerX = width / 2;
+
+    ctx.save();
+    ctx.font = '10px monospace';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 1.0;
+
+    // Iterate through visible degrees (-90 to +90 from center heading)
+    const range = 90;
+    const startDeg = Math.floor(headingDeg - range);
+    const endDeg = Math.ceil(headingDeg + range);
+
+    for (let d = startDeg; d <= endDeg; d++) {
+      const actualDeg = (d + 360) % 360;
+      
+      // Calculate screen X coordinate
+      const offsetDeg = d - headingDeg;
+      const x = centerX + offsetDeg / degreesPerPixel;
+
+      // Draw ticks and labels
+      if (actualDeg % 30 === 0) {
+        // Major ticks and labels (N, E, S, W, and angles)
+        let label = actualDeg.toString();
+        if (actualDeg === 0 || actualDeg === 360) {
+          label = 'N';
+          ctx.fillStyle = '#ff3333'; // Bright Red for North!
+          ctx.font = 'bold 11px monospace';
+        } else if (actualDeg === 90) {
+          label = 'E';
+          ctx.fillStyle = '#ffaa00'; // Warm Amber for East
+          ctx.font = 'bold 11px monospace';
+        } else if (actualDeg === 180) {
+          label = 'S';
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 11px monospace';
+        } else if (actualDeg === 270) {
+          label = 'W';
+          ctx.fillStyle = '#ffaa00';
+          ctx.font = 'bold 11px monospace';
+        } else {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+          ctx.font = '9px monospace';
+        }
+
+        // Draw label
+        ctx.fillText(label, x, height / 2 - 4);
+        
+        // Draw tick line
+        ctx.beginPath();
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.moveTo(x, height / 2 + 3);
+        ctx.lineTo(x, height - 4);
+        ctx.stroke();
+      } else if (actualDeg % 10 === 0) {
+        // Minor Ticks
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.beginPath();
+        ctx.moveTo(x, height / 2 + 6);
+        ctx.lineTo(x, height - 4);
+        ctx.stroke();
+      }
+    }
+
+    ctx.restore();
+  }
+
+  public updateMinimap(
+    terrainSize: number,
+    playerX: number,
+    playerZ: number,
+    cameraYaw: number,
+    course: Checkpoint[],
+    punchedCps: number[],
+    otherPlayers: { [id: string]: PlayerState }
+  ) {
+    if (!this.minimapCanvas || !this.minimapCtx) return;
+
+    const ctx = this.minimapCtx;
+    const width = this.minimapCanvas.width;
+    const height = this.minimapCanvas.height;
+
+    // Clear background
+    ctx.clearRect(0, 0, width, height);
+
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const radius = width / 2;
+
+    ctx.save();
+    
+    // Create circular clip region for circular minimap
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    ctx.clip();
+
+    // Fill background
+    ctx.fillStyle = 'rgba(12, 15, 24, 0.95)';
+    ctx.fillRect(0, 0, width, height);
+
+    // Coordinate mapping: zoomed in minimap scale
+    const scale = 1.2;
+
+    // Translate and rotate so drawing is centered on player and aligned with player heading (Heading-Up)
+    ctx.translate(centerX, centerY);
+    ctx.rotate(-cameraYaw); // Rotate opposite of camera yaw to align Heading-Up
+
+    // Draw topographic background map shifted relative to player position
+    const mapHalf = terrainSize / 2;
+    const mapOffsetX = -(playerX + mapHalf) * scale;
+    const mapOffsetZ = -(playerZ + mapHalf) * scale;
+
+    // Draw offscreenMapCanvas
+    ctx.drawImage(
+      this.offscreenMapCanvas,
+      0, 0, terrainSize, terrainSize,
+      mapOffsetX, mapOffsetZ, terrainSize * scale, terrainSize * scale
+    );
+
+    // Draw checkpoint course line splits
+    let lastX = mapOffsetX + mapHalf * scale;
+    let lastZ = mapOffsetZ + mapHalf * scale;
+
+    course.forEach((cp, idx) => {
+      const cx = mapOffsetX + (cp.x + mapHalf) * scale;
+      const cz = mapOffsetZ + (cp.z + mapHalf) * scale;
+      const isPunched = punchedCps.includes(idx);
+      const isTarget = (idx === punchedCps.length);
+
+      // Connection lines
+      ctx.beginPath();
+      ctx.strokeStyle = isPunched ? 'rgba(255, 51, 51, 0.45)' : 'rgba(255, 51, 51, 0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.moveTo(lastX, lastZ);
+      ctx.lineTo(cx, cz);
+      ctx.stroke();
+
+      // Checkpoint rings
+      ctx.beginPath();
+      ctx.strokeStyle = isTarget ? '#ffaa00' : '#ff3333';
+      ctx.lineWidth = isTarget ? 2.5 : 1.5;
+      ctx.arc(cx, cz, isTarget ? 7 : 5, 0, Math.PI * 2);
+      ctx.stroke();
+
+      if (isTarget) {
+        // Pulse ring for active target
+        const pulse = Math.abs(Math.sin(Date.now() * 0.005)) * 4 + 7;
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(255, 170, 0, 0.45)';
+        ctx.arc(cx, cz, pulse, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      lastX = cx;
+      lastZ = cz;
+    });
+
+    // Draw other players
+    for (const pid in otherPlayers) {
+      const other = otherPlayers[pid];
+      const ox = mapOffsetX + (other.x + mapHalf) * scale;
+      const oz = mapOffsetZ + (other.z + mapHalf) * scale;
+
+      ctx.beginPath();
+      ctx.arc(ox, oz, 4, 0, Math.PI * 2);
+      ctx.fillStyle = other.skinColor;
+      ctx.fill();
+      ctx.lineWidth = 1.0;
+      ctx.strokeStyle = 'white';
+      ctx.stroke();
+    }
+
+    ctx.restore();
   }
 }

@@ -111,6 +111,12 @@ export class Terrain {
   private chunkGroup = new THREE.Group();
   private waterMesh: THREE.Mesh | null = null;
 
+  // Infinite chunk loading properties
+  private activeChunks: { [key: string]: THREE.Mesh } = {};
+  private chunkSize = 64;
+  private chunkSegments = 32;
+  private renderRadius = 2; // 5x5 chunks grid centered on player
+
   constructor(scene: THREE.Scene, seed: number, biome: string = 'alpine') {
     this.scene = scene;
     this.noiseGen = new Noise2D(seed);
@@ -127,15 +133,61 @@ export class Terrain {
       shadowSide: THREE.DoubleSide
     });
 
-    // Stunning glassmorphic translucent water plane
+    // Stunning glassmorphic translucent water plane with custom depth and shoreline foam fading shaders
     this.materials['water'] = new THREE.MeshStandardMaterial({
-      color: this.biomeColors[this.biome]?.water || '#00a0f0',
+      color: '#ffffff', // Set base color to white so vertex colors render exactly
+      vertexColors: true, // Enable vertex colors for dynamic white crest foam!
       transparent: true,
-      opacity: 0.55,
-      roughness: 0.15,
-      metalness: 0.1,
+      opacity: 0.85,
+      roughness: 0.08,
+      metalness: 0.15,
       side: THREE.DoubleSide
     });
+
+    this.materials['water'].onBeforeCompile = (shader) => {
+      shader.vertexShader = `
+        attribute float aDepth;
+        varying float vDepth;
+      ` + shader.vertexShader;
+      
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `
+          #include <begin_vertex>
+          vDepth = aDepth;
+        `
+      );
+
+      shader.fragmentShader = `
+        varying float vDepth;
+      ` + shader.fragmentShader;
+
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <color_fragment>',
+        `
+          #include <color_fragment>
+          
+          // Style water color dynamically based on depth:
+          // Extremely shallow (shorelines) -> blend to white foam
+          // Deeper water -> blend to deep, rich blue with higher opacity
+          
+          float depthFactor = clamp(vDepth / 2.8, 0.0, 1.0); // scales from 0 to 2.8m deep
+          
+          vec3 shallowColor = vec3(0.8, 0.95, 1.0); // bright shoreline white/teal foam
+          vec3 deepColor = diffuseColor.rgb; // base biome water color (e.g. blue)
+          
+          // Shoreline foam threshold
+          if (vDepth < 0.35) {
+            float foam = clamp((0.35 - vDepth) / 0.35, 0.0, 1.0);
+            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0, 1.0, 1.0), foam * 0.95);
+            diffuseColor.a = mix(0.72, 0.95, foam);
+          } else {
+            diffuseColor.rgb = mix(shallowColor, deepColor, depthFactor);
+            diffuseColor.a = mix(0.48, 0.85, depthFactor);
+          }
+        `
+      );
+    };
   }
 
   // Retrieve dynamic elevation at arbitrary fractional coordinates
@@ -348,53 +400,43 @@ export class Terrain {
     return baseColor;
   }
 
-  // Create highly-optimized single-draw call deformed PlaneGeometry
+  // Create water plane mesh and do initial chunk loading
   public generateTerrainMeshes() {
     // Clear old meshes
     while (this.chunkGroup.children.length > 0) {
       const child = this.chunkGroup.children[0];
       this.chunkGroup.remove(child);
     }
+    this.activeChunks = {};
 
-    // Map segments: 192x192 offers outstanding visual smoothness at only 73,728 triangles!
-    const segments = 192;
-    const geometry = new THREE.PlaneGeometry(this.mapSize, this.mapSize, segments, segments);
-    
-    const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
-    const colors: number[] = [];
+    // Do initial chunk grid update at center
+    this.updateChunkGrid(0, 0);
 
-    for (let i = 0; i < posAttr.count; i++) {
-      const xLocal = posAttr.getX(i);
-      const yLocal = posAttr.getY(i); 
-
-      const worldX = xLocal;
-      const worldZ = -yLocal; 
-
-      const h = this.getTerrainHeight(worldX, worldZ);
-      posAttr.setZ(i, h); 
-
-      // Gather elevation blended color
-      const type = this.getTerrainType(worldX, worldZ);
-      const hex = this.getVoxelColorHex(type, h);
-      
-      const color = new THREE.Color(hex);
-      colors.push(color.r, color.g, color.b);
-    }
-
-    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    
-    // Rotate to fit standard 3D X-Z coordinate orientation
-    geometry.rotateX(-Math.PI / 2);
-    geometry.computeVertexNormals();
-
-    const terrainMesh = new THREE.Mesh(geometry, this.materials['terrain']);
-    terrainMesh.castShadow = true;
-    terrainMesh.receiveShadow = true;
-    this.chunkGroup.add(terrainMesh);
-
-    // Render single beautiful translucent water sheet plane
-    const waterGeom = new THREE.PlaneGeometry(this.mapSize, this.mapSize, 32, 32);
+    // Render single beautiful translucent water sheet plane centered on player chunk
+    const waterSegments = 64;
+    const waterGeom = new THREE.PlaneGeometry(160, 160, waterSegments, waterSegments); // 160x160m sheet
     waterGeom.rotateX(-Math.PI / 2);
+
+    // Initialize analytical depth attributes and base colors
+    const waterDepthAttr: number[] = [];
+    const waterColors: number[] = [];
+    const waterBaseColorHex = this.biomeColors[this.biome]?.water || '#00a0f0';
+    const waterBaseColor = new THREE.Color(waterBaseColorHex);
+    const waterPosAttr = waterGeom.getAttribute('position') as THREE.BufferAttribute;
+    
+    for (let i = 0; i < waterPosAttr.count; i++) {
+      const lx = waterPosAttr.getX(i);
+      const lz = waterPosAttr.getZ(i);
+      
+      const hUnder = this.getTerrainHeight(lx, lz);
+      const depth = Math.max(0, this.waterLevel - hUnder);
+      waterDepthAttr.push(depth);
+      
+      waterColors.push(waterBaseColor.r, waterBaseColor.g, waterBaseColor.b);
+    }
+    
+    waterGeom.setAttribute('aDepth', new THREE.Float32BufferAttribute(waterDepthAttr, 1));
+    waterGeom.setAttribute('color', new THREE.Float32BufferAttribute(waterColors, 3));
 
     this.waterMesh = new THREE.Mesh(waterGeom, this.materials['water']);
     this.waterMesh.position.set(0, this.waterLevel - 0.05, 0);
@@ -402,19 +444,155 @@ export class Terrain {
     this.chunkGroup.add(this.waterMesh);
   }
 
-  // Animate gentle water plane surface ripples on tick
-  public update(time: number) {
+  public updateChunkGrid(playerX: number, playerZ: number) {
+    const pChunkX = Math.floor(playerX / this.chunkSize);
+    const pChunkZ = Math.floor(playerZ / this.chunkSize);
+
+    const keySet = new Set<string>();
+
+    for (let cz = pChunkZ - this.renderRadius; cz <= pChunkZ + this.renderRadius; cz++) {
+      for (let cx = pChunkX - this.renderRadius; cx <= pChunkX + this.renderRadius; cx++) {
+        const key = `${cx},${cz}`;
+        keySet.add(key);
+
+        if (!this.activeChunks[key]) {
+          this.activeChunks[key] = this.buildTerrainChunk(cx, cz);
+        }
+      }
+    }
+
+    // Dispose and remove out-of-range chunks
+    for (const key in this.activeChunks) {
+      if (!keySet.has(key)) {
+        const mesh = this.activeChunks[key];
+        this.chunkGroup.remove(mesh);
+        mesh.geometry.dispose();
+        delete this.activeChunks[key];
+      }
+    }
+
+    // Move single water plane sheet to center on player chunk to optimize geometry draws
+    if (this.waterMesh) {
+      this.waterMesh.position.set(pChunkX * this.chunkSize, this.waterLevel - 0.05, pChunkZ * this.chunkSize);
+    }
+  }
+
+  private buildTerrainChunk(cx: number, cz: number): THREE.Mesh {
+    const size = this.chunkSize;
+    const geometry = new THREE.PlaneGeometry(size, size, this.chunkSegments, this.chunkSegments);
+    
+    const startX = cx * size;
+    const startZ = cz * size;
+
+    const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
+    const colors: number[] = [];
+
+    for (let i = 0; i < posAttr.count; i++) {
+      const lx = posAttr.getX(i);
+      const ly = posAttr.getY(i);
+
+      // Map PlaneGeometry coordinate offsets to world
+      const wx = startX + lx;
+      const wz = startZ - ly;
+
+      const h = this.getTerrainHeight(wx, wz);
+      posAttr.setZ(i, h);
+
+      // Dynamic slope erosion calculation for Triplanar-style blending
+      const hL = this.getTerrainHeight(wx - 0.5, wz);
+      const hR = this.getTerrainHeight(wx + 0.5, wz);
+      const hB = this.getTerrainHeight(wx, wz - 0.5);
+      const hF = this.getTerrainHeight(wx, wz + 0.5);
+      const slope = Math.sqrt((hR - hL) * (hR - hL) + (hF - hB) * (hF - hB));
+
+      const type = this.getTerrainType(wx, wz);
+      let hex = this.getVoxelColorHex(type, h);
+
+      const color = new THREE.Color(hex);
+
+      // Erosion blending: blend steep slopes to grey rock and peak caps to white snow
+      if (type !== 'water' && type !== 'path' && slope > 0.8) {
+        const slopeFactor = Math.min(1.0, (slope - 0.8) / 1.0);
+        const stoneColor = new THREE.Color('#7a7a7a');
+        color.lerp(stoneColor, slopeFactor * 0.85);
+
+        if (h >= 11.5) {
+          const snowColor = new THREE.Color('#f0f0f0');
+          color.lerp(snowColor, slopeFactor * 0.9);
+        }
+      }
+
+      // Beautiful Voxel-Paper procedural micro-texturing noise
+      const noiseVal = this.noiseGen.noise(wx * 0.7, wz * 0.7);
+      const texNoise = (noiseVal - 0.5) * 0.12;
+      color.r = Math.max(0, Math.min(1, color.r + texNoise));
+      color.g = Math.max(0, Math.min(1, color.g + texNoise));
+      color.b = Math.max(0, Math.min(1, color.b + texNoise));
+
+      colors.push(color.r, color.g, color.b);
+    }
+
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geometry.rotateX(-Math.PI / 2);
+    
+    // Offset chunk geometry translation to place it in the correct world grid location
+    geometry.translate(startX + size / 2, 0, startZ - size / 2);
+    geometry.computeVertexNormals();
+
+    const chunkMesh = new THREE.Mesh(geometry, this.materials['terrain']);
+    chunkMesh.castShadow = true;
+    chunkMesh.receiveShadow = true;
+    this.chunkGroup.add(chunkMesh);
+
+    return chunkMesh;
+  }
+
+  // Animate gentle water ripples and dynamic chunk loading centered on playerPos
+  public update(time: number, playerPos?: THREE.Vector3) {
+    if (playerPos) {
+      this.updateChunkGrid(playerPos.x, playerPos.z);
+    }
+
     if (this.waterMesh) {
       const posAttr = this.waterMesh.geometry.getAttribute('position') as THREE.BufferAttribute;
-      for (let i = 0; i < posAttr.count; i++) {
-        // After rotation, world coordinate Y remains the vertical displacement axis
-        const x = posAttr.getX(i);
-        const z = posAttr.getZ(i);
+      const colorAttr = this.waterMesh.geometry.getAttribute('color') as THREE.BufferAttribute;
+      
+      const waterBaseColorHex = this.biomeColors[this.biome]?.water || '#00a0f0';
+      const waterBaseColor = new THREE.Color(waterBaseColorHex);
 
-        const wave = Math.sin(time * 1.5 + x * 0.08) * Math.cos(time * 1.2 + z * 0.08) * 0.06;
+      // Get water sheet offset coordinates in world
+      const wxOffset = this.waterMesh.position.x;
+      const wzOffset = this.waterMesh.position.z;
+
+      for (let i = 0; i < posAttr.count; i++) {
+        // Find local coordinates on sheet and translate to world for ripple waves
+        const lx = posAttr.getX(i);
+        const lz = posAttr.getZ(i);
+        
+        const wx = wxOffset + lx;
+        const wz = wzOffset + lz;
+
+        // Multi-frequency wave formula
+        const wave1 = Math.sin(time * 1.6 + wx * 0.06 + wz * 0.04) * 0.08;
+        const wave2 = Math.cos(time * 2.2 - wx * 0.12 + wz * 0.10) * 0.04;
+        const wave3 = Math.sin(time * 0.8 + wx * 0.02 - wz * 0.02) * 0.12;
+        const wave = wave1 + wave2 + wave3;
         posAttr.setY(i, wave); 
+
+        // Dynamic white wave crest foam highlighting
+        const crestThreshold = 0.03;
+        const maxWaveHeight = 0.18;
+        const foamFactor = Math.max(0, Math.min(1, (wave - crestThreshold) / (maxWaveHeight - crestThreshold)));
+
+        // Interpolate colors: base water color -> white foam
+        const r = waterBaseColor.r + (1.0 - waterBaseColor.r) * foamFactor;
+        const g = waterBaseColor.g + (1.0 - waterBaseColor.g) * foamFactor;
+        const b = waterBaseColor.b + (1.0 - waterBaseColor.b) * foamFactor;
+
+        colorAttr.setXYZ(i, r, g, b);
       }
       posAttr.needsUpdate = true;
+      colorAttr.needsUpdate = true;
     }
   }
 

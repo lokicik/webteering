@@ -195,8 +195,10 @@ export class Foliage {
     });
     this.grassMaterial.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = { value: 0 };
+      shader.uniforms.uPlayerPos = { value: new THREE.Vector3(99999, 99999, 99999) };
       shader.vertexShader = `
         uniform float uTime;
+        uniform vec3 uPlayerPos;
       ` + shader.vertexShader;
       
       shader.vertexShader = shader.vertexShader.replace(
@@ -209,6 +211,23 @@ export class Foliage {
             float swayZ = cos(uTime * 3.8 + position.z * 2.0) * 0.25 * position.y;
             transformed.x += swayX;
             transformed.z += swayZ;
+
+            // Player bending displacement
+            #ifdef USE_INSTANCING
+              vec4 worldInstancePos = modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+            #else
+              vec4 worldInstancePos = modelMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+            #endif
+            
+            vec3 diff = worldInstancePos.xyz - uPlayerPos;
+            float dist = length(vec3(diff.x, 0.0, diff.z));
+            if (dist < 2.5) {
+              vec3 pushDir = normalize(vec3(diff.x, 0.0001, diff.z));
+              float bendAmount = (1.0 - dist / 2.5) * 0.8 * position.y;
+              transformed.x += pushDir.x * bendAmount;
+              transformed.z += pushDir.z * bendAmount;
+              transformed.y -= bendAmount * 0.25;
+            }
           }
         `
       );
@@ -224,8 +243,10 @@ export class Foliage {
     });
     this.flowerMaterial.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = { value: 0 };
+      shader.uniforms.uPlayerPos = { value: new THREE.Vector3(99999, 99999, 99999) };
       shader.vertexShader = `
         uniform float uTime;
+        uniform vec3 uPlayerPos;
       ` + shader.vertexShader;
       shader.vertexShader = shader.vertexShader.replace(
         '#include <begin_vertex>',
@@ -236,6 +257,23 @@ export class Foliage {
             float swayZ = cos(uTime * 4.0 + position.z * 3.0) * 0.20 * position.y;
             transformed.x += swayX;
             transformed.z += swayZ;
+
+            // Player bending displacement
+            #ifdef USE_INSTANCING
+              vec4 worldInstancePos = modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+            #else
+              vec4 worldInstancePos = modelMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+            #endif
+            
+            vec3 diff = worldInstancePos.xyz - uPlayerPos;
+            float dist = length(vec3(diff.x, 0.0, diff.z));
+            if (dist < 2.5) {
+              vec3 pushDir = normalize(vec3(diff.x, 0.0001, diff.z));
+              float bendAmount = (1.0 - dist / 2.5) * 0.7 * position.y;
+              transformed.x += pushDir.x * bendAmount;
+              transformed.z += pushDir.z * bendAmount;
+              transformed.y -= bendAmount * 0.2;
+            }
           }
         `
       );
@@ -501,12 +539,18 @@ export class Foliage {
   }
 
   // Animate dynamic grass billboard swayed offsets and conifer branch motions
-  public update(time: number) {
+  public update(time: number, playerPos?: THREE.Vector3) {
     if (this.grassMaterial.userData.shader) {
       this.grassMaterial.userData.shader.uniforms.uTime.value = time;
+      if (playerPos) {
+        this.grassMaterial.userData.shader.uniforms.uPlayerPos.value.copy(playerPos);
+      }
     }
     if (this.flowerMaterial.userData.shader) {
       this.flowerMaterial.userData.shader.uniforms.uTime.value = time;
+      if (playerPos) {
+        this.flowerMaterial.userData.shader.uniforms.uPlayerPos.value.copy(playerPos);
+      }
     }
     if (this.foliageMaterial.userData.shader) {
       this.foliageMaterial.userData.shader.uniforms.uTime.value = time;
