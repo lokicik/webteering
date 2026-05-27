@@ -425,4 +425,28 @@ export class Terrain {
   public getBiome(): string {
     return this.biome;
   }
+
+  public getWaterLevel(): number {
+    return this.waterLevel;
+  }
+
+  public dispose() {
+    // Clear old meshes and dispose geometries/materials
+    while (this.chunkGroup.children.length > 0) {
+      const child = this.chunkGroup.children[0] as THREE.Mesh;
+      this.chunkGroup.remove(child);
+      if (child.geometry) {
+        child.geometry.dispose();
+      }
+    }
+    
+    // Dispose materials
+    for (const key in this.materials) {
+      this.materials[key].dispose();
+    }
+    this.materials = {};
+
+    this.scene.remove(this.chunkGroup);
+  }
 }
+

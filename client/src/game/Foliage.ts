@@ -39,6 +39,120 @@ export class Foliage {
     this.initMaterials();
   }
 
+  private createProceduralGrassTexture(): THREE.Texture {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d')!;
+
+    // Transparent background
+    ctx.clearRect(0, 0, 256, 256);
+
+    // Draw grass blades starting from bottom-center curving outwards
+    const blades = 16;
+    for (let i = 0; i < blades; i++) {
+      ctx.save();
+      ctx.translate(128, 256);
+      
+      const angle = (Math.random() - 0.5) * 0.95; // curve angle
+      ctx.rotate(angle);
+
+      const height = 150 + Math.random() * 85;
+      const width = 12 + Math.random() * 8;
+
+      // Beautiful organic green gradient
+      const grad = ctx.createLinearGradient(0, 0, 0, -height);
+      grad.addColorStop(0, '#3f6212'); // Dark green root
+      grad.addColorStop(0.5, '#65a30d'); // Medium green blade
+      grad.addColorStop(1, '#a3e635'); // Bright lime tip
+      ctx.fillStyle = grad;
+
+      ctx.beginPath();
+      ctx.moveTo(-width / 2, 0);
+      // Quadratic curve to thin tip
+      ctx.quadraticCurveTo(-width / 4, -height * 0.7, (Math.random() - 0.5) * 16, -height);
+      ctx.quadraticCurveTo(width / 4, -height * 0.7, width / 2, 0);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
+  }
+
+  private createProceduralFlowerTexture(): THREE.Texture {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d')!;
+
+    // Transparent background
+    ctx.clearRect(0, 0, 256, 256);
+
+    // 1. Draw green stems
+    ctx.strokeStyle = '#3f6212';
+    ctx.lineWidth = 6;
+    ctx.lineCap = 'round';
+    
+    // Left stem
+    ctx.beginPath();
+    ctx.moveTo(128, 256);
+    ctx.quadraticCurveTo(90, 160, 80, 100);
+    ctx.stroke();
+
+    // Right stem
+    ctx.beginPath();
+    ctx.moveTo(128, 256);
+    ctx.quadraticCurveTo(150, 150, 170, 85);
+    ctx.stroke();
+
+    // 2. Base leaves
+    ctx.fillStyle = '#4d7c0f';
+    ctx.beginPath();
+    ctx.ellipse(128, 230, 28, 12, -0.4, 0, Math.PI * 2);
+    ctx.ellipse(128, 230, 28, 12, 0.4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Helper to draw a detailed daisy flower head
+    const drawFlowerHead = (cx: number, cy: number, radius: number) => {
+      // White petals
+      ctx.fillStyle = '#ffffff';
+      const petals = 12;
+      for (let j = 0; j < petals; j++) {
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate((j * Math.PI * 2) / petals);
+        ctx.beginPath();
+        ctx.ellipse(0, -radius * 0.8, radius * 0.35, radius * 0.9, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // Yellow disk floret center
+      ctx.fillStyle = '#facc15';
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius * 0.45, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Orange core detail
+      ctx.fillStyle = '#ca8a04';
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius * 0.22, 0, Math.PI * 2);
+      ctx.fill();
+    };
+
+    // Draw flowers at stem tips
+    drawFlowerHead(80, 100, 32);
+    drawFlowerHead(170, 85, 26);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
+  }
+
   private initMaterials() {
     // Custom shader injection for swaying wind movement
     const windShaderModifier = (shader: any) => {
@@ -52,7 +166,7 @@ export class Foliage {
         `
           #include <begin_vertex>
           // Sway amount scales with height (y) to keep base rooted
-          if (position.y > 0.1) {
+          if (position.y > 0.05) {
             float swayX = sin(uTime * 3.0 + position.x * 0.4) * 0.08 * position.y;
             float swayZ = cos(uTime * 2.6 + position.z * 0.4) * 0.08 * position.y;
             transformed.x += swayX;
@@ -72,9 +186,11 @@ export class Foliage {
       this.foliageMaterial.userData.shader = shader;
     };
 
-    // 3. Grass material (lime green) with high wind sway
+    // 3. Grass material (lime green) with high wind sway and detailed procedural alpha-cut blades
     this.grassMaterial = new THREE.MeshLambertMaterial({ 
-      color: 0x8ac926, 
+      map: this.createProceduralGrassTexture(),
+      transparent: true,
+      alphaTest: 0.5,
       side: THREE.DoubleSide
     });
     this.grassMaterial.onBeforeCompile = (shader) => {
@@ -99,9 +215,11 @@ export class Foliage {
       this.grassMaterial.userData.shader = shader;
     };
 
-    // 4. Wildflower material (yellow/white)
+    // 4. Wildflower material with detailed procedural daisies
     this.flowerMaterial = new THREE.MeshLambertMaterial({ 
-      color: 0xffd700, 
+      map: this.createProceduralFlowerTexture(),
+      transparent: true,
+      alphaTest: 0.5,
       side: THREE.DoubleSide
     });
     this.flowerMaterial.onBeforeCompile = (shader) => {
@@ -124,6 +242,7 @@ export class Foliage {
       this.flowerMaterial.userData.shader = shader;
     };
 
+
     // 5. Rocks/boulder material (grey)
     this.rockMaterial = new THREE.MeshLambertMaterial({ color: 0x707070 });
 
@@ -139,29 +258,31 @@ export class Foliage {
     const mapSize = terrain.getMapSize();
     const half = mapSize / 2;
 
-    // Define density metrics depending on active biome
+    // Define density metrics depending on active biome dynamically scaled by map size area ratio
+    const areaRatio = (mapSize * mapSize) / 147456; // Mapped relative to baseline 384x384 map area
+
     let treeCount = 0;
     let grassCount = 0;
     let boulderCount = 0;
     let hedgeCount = 0;
 
     if (biome === 'alpine') {
-      treeCount = 1800;
-      grassCount = 4000;
-      boulderCount = 200;
+      treeCount = Math.round(1800 * areaRatio);
+      grassCount = Math.round(4000 * areaRatio);
+      boulderCount = Math.round(200 * areaRatio);
     } else if (biome === 'dunes') {
-      treeCount = 150;      // Sparse coastal trees
-      grassCount = 6000;     // Lots of sand beach dune-grasses!
-      boulderCount = 60;     // Occasional dry shoreline rocks
+      treeCount = Math.round(150 * areaRatio);      // Sparse coastal trees
+      grassCount = Math.round(6000 * areaRatio);     // Lots of sand beach dune-grasses!
+      boulderCount = Math.round(60 * areaRatio);     // Occasional dry shoreline rocks
     } else if (biome === 'gullies') {
-      treeCount = 0;        // Completely arid canyon
-      grassCount = 600;      // Sparse dry brush
-      boulderCount = 500;    // Dense rocky deposits & boulders
+      treeCount = Math.round(0 * areaRatio);        // Completely arid canyon
+      grassCount = Math.round(600 * areaRatio);      // Sparse dry brush
+      boulderCount = Math.round(500 * areaRatio);    // Dense rocky deposits & boulders
     } else if (biome === 'sprint') {
-      treeCount = 400;      // Manicured garden birch/pines
-      grassCount = 3000;     // Tidy trimmed lawns
-      boulderCount = 20;     // Minimal decorative park rocks
-      hedgeCount = 180;      // Decorative hedge partitions
+      treeCount = Math.round(400 * areaRatio);      // Manicured garden birch/pines
+      grassCount = Math.round(3000 * areaRatio);     // Tidy trimmed lawns
+      boulderCount = Math.round(20 * areaRatio);     // Minimal decorative park rocks
+      hedgeCount = Math.round(180 * areaRatio);      // Decorative hedge partitions
     }
 
     const dummy = new THREE.Object3D();
@@ -200,7 +321,7 @@ export class Foliage {
         // Trees only spawn on forest soil types
         const canSpawn = (type === 'forest' || type === 'walk' || type === 'thicket' || (biome === 'sprint' && type === 'field'));
         if (canSpawn && y > 4.2) {
-          const scale = 0.75 + random() * 0.5; // slight height variation
+          const scale = 2.2 + random() * 1.0; // Majestic, realistic spruce trees (9m - 14m tall)
           
           dummy.position.set(x, y, z);
           dummy.rotation.set(0, random() * Math.PI * 2, 0);

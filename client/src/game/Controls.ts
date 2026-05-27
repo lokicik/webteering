@@ -4,6 +4,7 @@ import { Sound } from '../ui/Sound';
 export interface CollidableTerrain {
   getTerrainHeight(x: number, z: number): number;
   getTerrainType(x: number, z: number): string;
+  getWaterLevel(): number;
 }
 
 export class Controls {
@@ -73,6 +74,10 @@ export class Controls {
     this.position.copy(camera.position);
   }
 
+  public setTerrain(terrain: CollidableTerrain) {
+    this.terrain = terrain;
+  }
+
   private initKeyboard() {
     window.addEventListener('keydown', (e) => {
       if (!this.isLocked && !this.isFlightMode) return;
@@ -84,8 +89,8 @@ export class Controls {
       if (e.code === 'Space') this.keys.Space = true;
       if (e.code === 'ShiftLeft') this.keys.ShiftLeft = true;
       
-      // Developer flight toggle shortcut (F key)
-      if (e.code === 'KeyF') {
+      // Developer flight toggle shortcut (Ctrl + Shift + F)
+      if (e.ctrlKey && e.shiftKey && e.code === 'KeyF') {
         // Toggle flight mode
         this.isFlightMode = !this.isFlightMode;
         const flyChk = document.getElementById('chk-fly') as HTMLInputElement;
@@ -191,33 +196,33 @@ export class Controls {
       }
     }
 
-    // --- 1. GET RUNNABILITY SPEED MULTIPLIER ---
+    // --- 1. GET RUNNABILITY BASE SPEED BY TERRAIN ---
     const currentTerrainType = this.terrain.getTerrainType(this.position.x, this.position.z);
-    let speedMultiplier = 1.0;
+    let baseTerrainSpeed = 7.5; // Very healthy standard running speed (27 km/h)
     this.isSwimming = false;
 
     switch (currentTerrainType) {
       case 'field':
-        speedMultiplier = 1.0;
+        baseTerrainSpeed = 7.5;
         break;
       case 'forest':
-        speedMultiplier = 0.85;
+        baseTerrainSpeed = 6.2; // Slowed by scattered trees
         break;
       case 'walk':
-        speedMultiplier = 0.60;
+        baseTerrainSpeed = 4.8; // Slow forest floor/weeds
         break;
       case 'thicket':
-        speedMultiplier = 0.35;
+        baseTerrainSpeed = 3.0; // Thick bushes/obstructions
         break;
       case 'water':
-        speedMultiplier = 0.25;
+        baseTerrainSpeed = 2.2; // Swimming speed
         this.isSwimming = true;
         break;
       case 'path':
-        speedMultiplier = 1.10; // Extra speed on clear tracks!
+        baseTerrainSpeed = 8.5; // High-performance sprint on clear paths!
         break;
       default:
-        speedMultiplier = 1.0;
+        baseTerrainSpeed = 7.5;
     }
 
     // Play swimming splash sound on transition
@@ -236,18 +241,20 @@ export class Controls {
       staminaMoveDirection.set(this.joystickVector.x, 0, -this.joystickVector.y);
     }
     const isMoving = staminaMoveDirection.lengthSq() > 0.01;
+    const isSprinting = isMoving && !this.keys.ShiftLeft && !this.isFlightMode;
 
-    if (isMoving && !this.keys.ShiftLeft && !this.isFlightMode) {
-      // Draining stamina
-      let drainRate = 6.0; // base running drain
-      if (currentTerrainType === 'walk') drainRate = 10.0;
-      else if (currentTerrainType === 'thicket') drainRate = 14.0;
-      else if (currentTerrainType === 'water') drainRate = 12.0;
+    if (isSprinting) {
+      // Sprinting stamina drain (much more balanced, takes ~33-40s on flat ground)
+      let drainRate = 2.5; 
+      if (currentTerrainType === 'forest') drainRate = 3.2;
+      else if (currentTerrainType === 'walk') drainRate = 4.2;
+      else if (currentTerrainType === 'thicket') drainRate = 6.0;
+      else if (currentTerrainType === 'water') drainRate = 5.0;
       
       this.stamina = Math.max(0.0, this.stamina - drainRate * delta);
     } else {
-      // Recovering stamina
-      const recoveryRate = isMoving ? 10.0 : 18.0;
+      // Recovering stamina when stationary or walking/jogging
+      const recoveryRate = isMoving ? 8.0 : 15.0; // recovers at 8.0/s during jog recovery vs 15.0/s standing still
       this.stamina = Math.min(100.0, this.stamina + recoveryRate * delta);
     }
 
@@ -258,34 +265,41 @@ export class Controls {
       this.isExhausted = false; // must recover to 35% to clear fatigue
     }
 
-    // Apply exhaustion speed caps (40% speed)
+    // --- 1.5. APPLY SPEED MODIFIERS AND NON-PUNISHING CLAMPED CAPS ---
+    let currentSpeed = baseTerrainSpeed;
+
     if (this.isExhausted) {
-      speedMultiplier *= 0.40;
+      // Exhaustion limits dry land speed to a jog of 3.5 m/s, or applies a mild 35% penalty
+      currentSpeed = Math.min(currentSpeed * 0.65, 3.5);
     }
 
-    // Apply steep slip stumble speed penalty (25% speed)
-    if (this.slipTimer > 0) {
-      speedMultiplier *= 0.25;
-    }
-
-    // Walking / jogging toggle (Slow Shift)
     if (this.keys.ShiftLeft) {
-      speedMultiplier *= 0.45;
+      // Shift limits speed to a gentle recovery walk/jog of 3.8 m/s, or applies a 50% penalty
+      currentSpeed = Math.min(currentSpeed * 0.50, 3.8);
     }
 
     // Map reading speed penalty (15% slower when map is open)
     const mapPanel = document.getElementById('map-panel');
     const isMapOpen = mapPanel && !mapPanel.classList.contains('hidden');
     if (isMapOpen) {
-      speedMultiplier *= 0.85;
+      currentSpeed *= 0.85;
+    }
+
+    // Slipped or stumbled penalty (steep slides)
+    if (this.slipTimer > 0) {
+      currentSpeed *= 0.35;
+    }
+
+    // Vaulting speed boost
+    if (this.isVaulting) {
+      currentSpeed *= this.vaultSpeedBoost;
     }
 
     // Stun recovery multiplier
     if (this.stunTimer > 0) {
-      speedMultiplier *= 0.3;
+      currentSpeed *= 0.3;
     }
 
-    const currentSpeed = this.runSpeed * speedMultiplier * this.vaultSpeedBoost;
 
     // --- 2. CALCULATE INPUT DIRECTION ---
     const moveDirection = new THREE.Vector3(0, 0, 0);
@@ -334,7 +348,7 @@ export class Controls {
     // Vertical velocity (Gravity / Swimming buoyancy)
     if (this.isSwimming) {
       // Bouyant floating physics in water
-      const waterHeight = this.terrain.getTerrainHeight(this.position.x, this.position.z);
+      const waterHeight = this.terrain.getWaterLevel();
       const submergedDepth = waterHeight - this.position.y;
       
       if (submergedDepth > 0) {
@@ -388,9 +402,10 @@ export class Controls {
     const targetVelX = rotatedMove.x * currentSpeed;
     const targetVelZ = rotatedMove.z * currentSpeed;
     
-    const accelRate = this.isGrounded ? 15.0 : 4.0; // Less control in air
+    const accelRate = this.isGrounded ? 10.0 : 4.0; // Smooth physical inertia
     this.velocity.x += (targetVelX - this.velocity.x) * accelRate * delta;
     this.velocity.z += (targetVelZ - this.velocity.z) * accelRate * delta;
+
 
     // --- 4. STEP CLIMB & COLLISION VERIFICATION ---
     const nextPos = this.position.clone().addScaledVector(new THREE.Vector3(this.velocity.x, 0, this.velocity.z), delta);
@@ -398,7 +413,7 @@ export class Controls {
     
     const heightDiff = targetFloorHeight - this.position.y;
 
-    if (heightDiff > 1.2) {
+    if (heightDiff > 0.4) {
       // Wall block: Height is too high to step up. Block horizontal velocity!
       this.velocity.x = 0;
       this.velocity.z = 0;
@@ -407,9 +422,14 @@ export class Controls {
       this.position.x = nextPos.x;
       this.position.z = nextPos.z;
       
-      if (heightDiff > 0 && this.isGrounded) {
-        // Upward slope running penalty: slows climbing slightly
-        this.position.y += heightDiff * 0.8;
+      if (this.isGrounded) {
+        if (heightDiff < -3.5) {
+          // Ledge drop: player walks off a cliff! Become ungrounded and fall.
+          this.isGrounded = false;
+        } else {
+          // Walkable slope: keep player perfectly aligned to the terrain height!
+          this.position.y = targetFloorHeight;
+        }
       }
 
       // Slope slipping & sliding check (descending slope slides)
@@ -454,7 +474,10 @@ export class Controls {
 
     const currentFloorHeight = this.terrain.getTerrainHeight(this.position.x, this.position.z);
     
-    if (this.position.y <= currentFloorHeight) {
+    // Snapping with a 0.8m recovery shell if falling or walking down (velocity.y <= 0) to prevent slope launch
+    const landingThreshold = (this.velocity.y <= 0.0) ? 0.8 : 0.05;
+    
+    if (this.position.y <= currentFloorHeight + landingThreshold) {
       // Landed!
       
       // Fall stun check: if fell too hard

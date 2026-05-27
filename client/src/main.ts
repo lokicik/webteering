@@ -214,6 +214,27 @@ class WebteeringApp {
       }
     });
 
+    // In-game Exit Race Button trigger
+    const btnExitRace = document.getElementById('btn-exit-race');
+    btnExitRace?.addEventListener('click', () => {
+      if (this.isTutorial) {
+        this.exitTutorial();
+      } else if (this.isFreeplay) {
+        this.exitFreeplay();
+      } else if (this.isRelaxed) {
+        this.exitRelaxedMode();
+      } else if (this.activeRoomId) {
+        this.network.leaveRoom();
+        this.activeRoomId = null;
+        this.roomState = null;
+        this.elements.clearStaticEntities();
+        this.foliage.clear();
+        document.getElementById('hud-container')?.classList.add('hidden');
+        document.getElementById('room-wait-screen')?.classList.add('hidden');
+        document.getElementById('lobby-screen')?.classList.remove('hidden');
+      }
+    });
+
     // In-game Rules & Manual guide toggles
     const btnOpenGuide = document.getElementById('btn-open-guide');
     const btnCloseGuide = document.getElementById('btn-close-guide');
@@ -346,6 +367,9 @@ class WebteeringApp {
       // Start forest wind ambience
       Sound.startWindAmbience();
 
+      // Reset flight mode to false for fair competitive multiplayer racing!
+      this.controls.isFlightMode = false;
+
       // 2. Load 3D Terrain on demand if not loaded or matching seed
       this.reloadTerrainAndCourse(this.roomState.mapSeed, this.roomState.course);
 
@@ -366,8 +390,14 @@ class WebteeringApp {
     this.pathRecordTimer = 0;
     this.activeCourse = course;
 
+    // Dispose old terrain chunk group and materials to prevent leaks & ghost overlays
+    if (this.terrain) {
+      this.terrain.dispose();
+    }
+
     // Regenerate heightfield meshes
     this.terrain = new Terrain(this.engine.scene, seed, biome);
+    this.controls.setTerrain(this.terrain);
     this.terrain.generateTerrainMeshes();
 
     // Redraw HUD compass/legend once
@@ -379,6 +409,7 @@ class WebteeringApp {
     // Snap local player to dry start position height
     const startHeight = this.terrain.getTerrainHeight(0, 0);
     this.controls.position.set(0, startHeight + 1.0, 0);
+
 
     // Build 3D Control flags
     course.forEach(cp => {
@@ -491,6 +522,7 @@ class WebteeringApp {
   private startTutorialMode() {
     this.isTutorial = true;
     this.isFreeplay = false;
+    this.controls.isFlightMode = false;
     this.tutorialStep = 1;
 
     // Load static tutorial seed (seed = 101)
@@ -616,6 +648,7 @@ class WebteeringApp {
   private startFreeplayMode() {
     this.isFreeplay = true;
     this.isTutorial = false;
+    this.controls.isFlightMode = false;
     this.rogainePunchedCps = [];
     this.rogainePoints = 0;
     this.relaxedStartTime = Date.now(); // Store start time for splits and Rogaine time limits
@@ -754,6 +787,7 @@ class WebteeringApp {
     selTime.onchange = updateTimeSettings;
     rngFog.oninput = updateTimeSettings;
     
+    chkFly.checked = this.controls.isFlightMode;
     chkFly.onchange = () => {
       this.controls.isFlightMode = chkFly.checked;
     };
@@ -808,6 +842,7 @@ class WebteeringApp {
     this.isRelaxed = true;
     this.isTutorial = false;
     this.isFreeplay = false;
+    this.controls.isFlightMode = false;
     this.relaxedStartTime = Date.now();
 
     // 1. Generate random seed

@@ -84,6 +84,38 @@ export class Elements {
     return boulder;
   }
 
+  private flagMaterial: THREE.MeshLambertMaterial | null = null;
+
+  private getFlagMaterial(): THREE.MeshLambertMaterial {
+    if (!this.flagMaterial) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 256;
+      canvas.height = 256;
+      const ctx = canvas.getContext('2d')!;
+
+      // 100% compliant with IOF official rules: split diagonally from top-left to bottom-right
+      ctx.fillStyle = '#ffffff'; // White upper-left triangle
+      ctx.fillRect(0, 0, 256, 256);
+
+      ctx.fillStyle = '#ff6600'; // Vibrant IOF orange lower-right triangle
+      ctx.beginPath();
+      ctx.moveTo(0, 256); // Bottom-left
+      ctx.lineTo(256, 256); // Bottom-right
+      ctx.lineTo(256, 0); // Top-right
+      ctx.closePath();
+      ctx.fill();
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      
+      this.flagMaterial = new THREE.MeshLambertMaterial({
+        map: texture,
+        side: THREE.DoubleSide
+      });
+    }
+    return this.flagMaterial;
+  }
+
   // Build a glowing orange and white diagonal Voxel Control Flag
   public createControlFlag(cp: Checkpoint, y: number): THREE.Group {
     const flagGroup = new THREE.Group();
@@ -102,9 +134,6 @@ export class Elements {
     const flagBase = new THREE.Group();
     flagBase.position.y = 1.5;
     
-    const orangeMat = new THREE.MeshLambertMaterial({ color: 0xff6600, emissive: 0xff6600, emissiveIntensity: 0.2 });
-    const whiteMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-
     // Build the 3-sided voxel flag shape using panels
     const pSize = 0.55;
     
@@ -115,21 +144,17 @@ export class Elements {
       side.position.set(Math.sin(angle) * 0.28, 0, Math.cos(angle) * 0.28);
       side.rotation.y = angle + Math.PI;
 
-      // Split into top-white / bottom-orange matching standard flag
-      const topHalf = new THREE.Mesh(new THREE.PlaneGeometry(pSize, pSize / 2), whiteMat);
-      topHalf.position.y = pSize / 4;
-      topHalf.castShadow = true;
-      side.add(topHalf);
-
-      const bottomHalf = new THREE.Mesh(new THREE.PlaneGeometry(pSize, pSize / 2), orangeMat);
-      bottomHalf.position.y = -pSize / 4;
-      bottomHalf.castShadow = true;
-      side.add(bottomHalf);
+      // Single plane split diagonally via procedural texture matching official IOF specifications
+      const face = new THREE.Mesh(new THREE.PlaneGeometry(pSize, pSize), this.getFlagMaterial());
+      face.position.y = 0;
+      face.castShadow = true;
+      side.add(face);
 
       flagBase.add(side);
     }
     
     flagGroup.add(flagBase);
+
 
     // 3. Faint orange locator point-light (stunning for night runs!)
     const light = new THREE.PointLight(0xff6600, 1.2, 8.0);
