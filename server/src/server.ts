@@ -141,6 +141,21 @@ io.on('connection', (socket: Socket) => {
     }
   });
 
+  // 6.5. Send chat message to room
+  socket.on('send-chat-message', (message: string) => {
+    const roomId = roomManager.getPlayerRoomId(socket.id);
+    if (!roomId) return;
+    const room = roomManager.getRoom(roomId);
+    const player = room?.players[socket.id];
+    if (player) {
+      io.to(roomId).emit('chat-message', {
+        sender: player.name,
+        msg: message.substring(0, 100), // Limit length for safety
+        color: player.skinColor
+      });
+    }
+  });
+
   // 7. Disconnect and cleanup
   socket.on('disconnect', () => {
     const roomId = roomManager.getPlayerRoomId(socket.id);

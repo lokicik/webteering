@@ -60,6 +60,14 @@ class WebteeringApp {
   // Breath condensation puffs
   private breathPuffs: { mesh: THREE.Mesh; vel: THREE.Vector3; age: number; maxAge: number }[] = [];
 
+  // Fortnite Lobby custom tracking properties
+  private isSoundtrackPlaying = false;
+  private isLocalReady = false;
+  private selectedJerseyColor = '#ff3333';
+  private lobbyPedestals: THREE.Mesh[] = [];
+  private lobbyPlayersMeshes: THREE.Group[] = [];
+  private isLobbyActive = true; // Starts in the Landing screen / Lobby loop
+
   constructor() {
     this.initCore();
     this.initLobbyUI();
@@ -94,11 +102,159 @@ class WebteeringApp {
     // Hide HUD initially
     document.getElementById('hud-container')?.classList.add('hidden');
     
-    // Remove loader
+    // Remove loader and landing screen
     document.getElementById('loading-screen')?.classList.add('hidden');
+    document.getElementById('landing-screen')?.classList.remove('hidden');
+
+    // Generate terrain visual in the background for landing scene preview immediately
+    this.terrain.generateTerrainMeshes();
+    this.foliage.generateFoliage(this.terrain, 12345, 'alpine');
+
+    // Build the rotating player model on landing
+    this.rebuildLobby3D();
 
     // 6. Start the engine loop
     this.engine.start();
+  }
+
+  // --- 3D PEDESTALS PARTY GENERATION ---
+  private rebuildLobby3D() {
+    if (!this.isLobbyActive) return;
+
+    // 1. Clean up old lobby objects
+    this.cleanupLobby3D();
+
+    const yCenter = this.terrain.getTerrainHeight(0, 0);
+    const yLeft = this.terrain.getTerrainHeight(-1.5, -0.6);
+    const yRight = this.terrain.getTerrainHeight(1.5, -0.6);
+
+    // Pedestal disk helper
+    const createPedestal = (x: number, y: number, z: number, colorHex: number) => {
+      const geom = new THREE.CylinderGeometry(0.8, 0.9, 0.15, 16);
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0x111622,
+        roughness: 0.2,
+        metalness: 0.8,
+        emissive: colorHex,
+        emissiveIntensity: 0.8
+      });
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.position.set(x, y + 0.075, z);
+      mesh.receiveShadow = true;
+      mesh.castShadow = true;
+      this.engine.scene.add(mesh);
+      this.lobbyPedestals.push(mesh);
+    };
+
+    // Spawn Me (Center platform)
+    const myReadyColor = this.isLocalReady ? 0x33ff33 : 0x00ccff;
+    createPedestal(0, yCenter, 0, myReadyColor);
+
+    const myRunner = this.elements.buildVoxelRunner(this.selectedJerseyColor);
+    myRunner.position.set(0, yCenter + 0.1, 0);
+    this.engine.scene.add(myRunner);
+    this.lobbyPlayersMeshes.push(myRunner);
+
+    // Synchronize current local customizers details into Top Badges & Nameplates UI
+    const nameInput = document.getElementById('player-name') as HTMLInputElement;
+    const currentName = nameInput?.value || 'Runner_01';
+    
+    const headerName = document.getElementById('header-runner-lbl');
+    if (headerName) headerName.innerText = currentName;
+    const headerDot = document.getElementById('header-color-dot');
+    if (headerDot) headerDot.style.backgroundColor = this.selectedJerseyColor;
+
+    // Platform nameplates HUD updates
+    const tagP1 = document.getElementById('tag-p1');
+    const tagP2 = document.getElementById('tag-p2');
+    const tagP3 = document.getElementById('tag-p3');
+
+    if (tagP1) {
+      tagP1.classList.remove('hidden');
+      const tagColor = tagP1.querySelector('.tag-color-indicator') as HTMLElement;
+      if (tagColor) tagColor.style.backgroundColor = this.selectedJerseyColor;
+      const tagName = tagP1.querySelector('.tag-name') as HTMLElement;
+      if (tagName) tagName.innerText = currentName;
+      const tagStatus = tagP1.querySelector('.tag-status') as HTMLElement;
+      if (tagStatus) {
+        if (this.activeRoomId) {
+          const isHost = this.isRoomHost();
+          tagStatus.innerText = this.isLocalReady ? 'READY' : (isHost ? 'LEADER' : 'WAITING');
+          if (this.isLocalReady) {
+            tagP1.classList.add('ready');
+          } else {
+            tagP1.classList.remove('ready');
+          }
+        } else {
+          tagStatus.innerText = 'SOLO';
+          tagP1.classList.remove('ready');
+        }
+      }
+    }
+
+    // Spawn other connected squad runners in party pedestals (Me + 2 friends)
+    let extraIndex = 0;
+    if (this.roomState && this.localPlayerId) {
+      const playersList = Object.values(this.roomState.players).filter(p => p.id !== this.localPlayerId);
+      
+      playersList.forEach((p, idx) => {
+        if (idx >= 2) return; // Cap 3D screen rendering to fit layout nicely
+
+        const isLeft = (idx === 0);
+        const px = isLeft ? -1.5 : 1.5;
+        const pz = -0.6;
+        const py = isLeft ? yLeft : yRight;
+
+        // Visual pedestal glow matching squad
+        createPedestal(px, py, pz, 0x00ccff);
+
+        // Spawn runner model
+        const runner = this.elements.buildVoxelRunner(p.skinColor);
+        runner.position.set(px, py + 0.1, pz);
+        
+        // Tilt runner slightly toward me
+        runner.rotation.y = isLeft ? 0.35 : -0.35;
+
+        this.engine.scene.add(runner);
+        this.lobbyPlayersMeshes.push(runner);
+
+        // Update squad HTML overlays
+        const tag = isLeft ? tagP2 : tagP3;
+        if (tag) {
+          tag.classList.remove('hidden');
+          const tColor = tag.querySelector('.tag-color-indicator') as HTMLElement;
+          if (tColor) tColor.style.backgroundColor = p.skinColor;
+          const tName = tag.querySelector('.tag-name') as HTMLElement;
+          if (tName) tName.innerText = p.name;
+          const tStatus = tag.querySelector('.tag-status') as HTMLElement;
+          if (tStatus) tStatus.innerText = 'SQUAD';
+        }
+        extraIndex++;
+      });
+    }
+
+    // Hide empty/inactive squad nametags
+    if (extraIndex < 2) {
+      if (extraIndex < 1 && tagP2) tagP2.classList.add('hidden');
+      if (tagP3) tagP3.classList.add('hidden');
+    }
+  }
+
+  private cleanupLobby3D() {
+    this.lobbyPedestals.forEach(m => this.engine.scene.remove(m));
+    this.lobbyPlayersMeshes.forEach(m => this.engine.scene.remove(m));
+    this.lobbyPedestals = [];
+    this.lobbyPlayersMeshes = [];
+    
+    // Hide squad plates
+    document.getElementById('tag-p2')?.classList.add('hidden');
+    document.getElementById('tag-p3')?.classList.add('hidden');
+  }
+
+  private isRoomHost(): boolean {
+    if (!this.roomState) return true;
+    const players = Object.values(this.roomState.players);
+    return players[0]?.id === this.localPlayerId;
   }
 
   private initLobbyUI() {
@@ -108,7 +264,6 @@ class WebteeringApp {
     const nameInput = document.getElementById('player-name') as HTMLInputElement;
     const roomInput = document.getElementById('new-room-id') as HTMLInputElement;
     const btnCreate = document.getElementById('btn-create-room');
-    const btnStartRace = document.getElementById('btn-start-race');
     const btnLeaveRoom = document.getElementById('btn-leave-room');
     const btnPodiumClose = document.getElementById('btn-podium-close');
 
@@ -117,16 +272,110 @@ class WebteeringApp {
       roomInput.value = Math.random().toString(36).substring(2, 6).toUpperCase();
     }
 
+    // 1. Landing Screen CTA triggers
+    document.getElementById('btn-enter-lobby')?.addEventListener('click', () => {
+      Sound.playTick(true);
+      document.getElementById('landing-screen')?.classList.add('hidden');
+      document.getElementById('lobby-screen')?.classList.remove('hidden');
+      this.isLobbyActive = true;
+      this.rebuildLobby3D();
+    });
+
+    // 2. Soundtrack toggles
+    const btnSoundtrack = document.getElementById('btn-toggle-soundtrack');
+    btnSoundtrack?.addEventListener('click', () => {
+      this.isSoundtrackPlaying = !this.isSoundtrackPlaying;
+      if (this.isSoundtrackPlaying) {
+        Sound.startSoundtrack();
+        if (btnSoundtrack) btnSoundtrack.innerHTML = 'Mute Soundtrack 🔇';
+      } else {
+        Sound.stopSoundtrack();
+        if (btnSoundtrack) btnSoundtrack.innerHTML = 'Toggle Soundtrack 🔊';
+      }
+    });
+
+    // 3. Tab Navigation buttons click events
+    const tabNames = ['play', 'locker', 'leaderboard', 'guide'];
+    tabNames.forEach(tabName => {
+      const tabBtn = document.getElementById(`tab-btn-${tabName}`);
+      tabBtn?.addEventListener('click', () => {
+        Sound.playDialClick();
+        tabNames.forEach(t => {
+          document.getElementById(`tab-btn-${t}`)?.classList.remove('active');
+          document.getElementById(`tab-content-${t}`)?.classList.add('hidden');
+          document.getElementById(`tab-content-${t}`)?.classList.remove('active');
+        });
+        tabBtn.classList.add('active');
+        const activePane = document.getElementById(`tab-content-${tabName}`);
+        activePane?.classList.remove('hidden');
+        activePane?.classList.add('active');
+        this.rebuildLobby3D(); // refresh pedestals
+      });
+    });
+
+    // Nickname input sync change
+    nameInput?.addEventListener('input', () => {
+      this.rebuildLobby3D();
+    });
+
     // Connect color picker buttons
-    let selectedColor = '#ff3333';
     const colorBtns = document.querySelectorAll('.color-btn');
     colorBtns.forEach(btn => {
       btn.addEventListener('click', () => {
         colorBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
-        selectedColor = (btn as HTMLElement).dataset.color || '#ff3333';
+        this.selectedJerseyColor = (btn as HTMLElement).dataset.color || '#ff3333';
+        this.rebuildLobby3D();
       });
     });
+
+    // 4. Real-time Lobby chat hooks
+    const chatInput = document.getElementById('chat-input') as HTMLInputElement;
+    const btnSendChat = document.getElementById('btn-send-chat');
+
+    const handleSendChat = () => {
+      const msg = chatInput.value.trim();
+      if (!msg) return;
+      
+      if (!this.activeRoomId) {
+        // Echo solo message
+        const log = document.getElementById('chat-messages-log');
+        if (log) {
+          const entry = document.createElement('p');
+          entry.className = 'chat-system-msg';
+          entry.innerText = `You: ${msg} (Join a multiplayer room to chat with others!)`;
+          log.appendChild(entry);
+          log.parentElement!.scrollTop = log.parentElement!.scrollHeight;
+        }
+        chatInput.value = '';
+        Sound.playDialClick();
+        return;
+      }
+
+      this.network.sendChatMessage(msg);
+      chatInput.value = '';
+    };
+
+    btnSendChat?.addEventListener('click', handleSendChat);
+    chatInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') handleSendChat();
+    });
+
+    // Sync Chat Message callbacks
+    this.network.onChatMessage = (data) => {
+      const log = document.getElementById('chat-messages-log');
+      if (!log) return;
+      const entry = document.createElement('div');
+      entry.className = 'chat-msg-entry';
+      entry.innerHTML = `<span class="sender" style="color: ${data.color}">${data.sender}:</span><span>${data.msg}</span>`;
+      log.appendChild(entry);
+      
+      const parent = log.parentElement;
+      if (parent) {
+        parent.scrollTop = parent.scrollHeight;
+      }
+      Sound.playTick(false);
+    };
 
     // Room Browser lists hook
     this.network.onRoomsList = (rooms) => {
@@ -155,7 +404,7 @@ class WebteeringApp {
             r.id,
             r.name,
             nameInput.value || 'Runner',
-            selectedColor
+            this.selectedJerseyColor
           );
         });
 
@@ -179,13 +428,8 @@ class WebteeringApp {
         code,
         `Room ${code.toUpperCase()}`,
         nameInput.value || 'Runner',
-        selectedColor
+        this.selectedJerseyColor
       );
-    });
-
-    // Start Race Countdowns trigger
-    btnStartRace?.addEventListener('click', () => {
-      this.network.startRace();
     });
 
     // Leave Room wait triggers
@@ -193,23 +437,51 @@ class WebteeringApp {
       this.network.leaveRoom();
       this.activeRoomId = null;
       this.roomState = null;
+      this.isLocalReady = false;
       this.elements.clearStaticEntities();
       this.foliage.clear();
-      document.getElementById('room-wait-screen')?.classList.add('hidden');
-      document.getElementById('lobby-screen')?.classList.remove('hidden');
+      
+      document.getElementById('room-active-footer')?.classList.add('hidden');
+      
+      const log = document.getElementById('chat-messages-log');
+      if (log) log.innerHTML = '<p class="chat-system-msg">System: Left party room. Joined public sandbox channel.</p>';
+      
+      this.rebuildLobby3D();
+    });
+
+    // Ready/Play button click triggers (Fortnite orange ready up button)
+    const btnReadyPlay = document.getElementById('btn-ready-play');
+    btnReadyPlay?.addEventListener('click', () => {
+      if (!this.activeRoomId) {
+        // Launch freeplay solo mode directly
+        Sound.playTick(true);
+        this.startFreeplayMode();
+      } else {
+        if (this.isRoomHost()) {
+          // Host starts countdown
+          this.network.startRace();
+        } else {
+          // Client toggles ready up status
+          this.isLocalReady = !this.isLocalReady;
+          this.rebuildLobby3D();
+          Sound.playTick(true);
+        }
+      }
     });
 
     // Close scoreboard triggers
     btnPodiumClose?.addEventListener('click', () => {
       document.getElementById('podium-screen')?.classList.add('hidden');
       if (this.activeRoomId) {
-        // Return to waiting room screen
-        document.getElementById('room-wait-screen')?.classList.remove('hidden');
+        // Return to lobby
+        this.isLobbyActive = true;
+        this.rebuildLobby3D();
       } else {
         if (this.isRelaxed) {
           this.exitRelaxedMode();
         } else {
-          document.getElementById('lobby-screen')?.classList.remove('hidden');
+          this.isLobbyActive = true;
+          this.rebuildLobby3D();
         }
       }
     });
@@ -227,15 +499,19 @@ class WebteeringApp {
         this.network.leaveRoom();
         this.activeRoomId = null;
         this.roomState = null;
+        this.isLocalReady = false;
         this.elements.clearStaticEntities();
         this.foliage.clear();
+        
+        document.getElementById('room-active-footer')?.classList.add('hidden');
         document.getElementById('hud-container')?.classList.add('hidden');
-        document.getElementById('room-wait-screen')?.classList.add('hidden');
-        document.getElementById('lobby-screen')?.classList.remove('hidden');
+        
+        this.isLobbyActive = true;
+        this.rebuildLobby3D();
       }
     });
 
-    // In-game Rules & Manual guide toggles
+    // In-game Rules & Manual guide toggles (unused but keep reference for safety)
     const btnOpenGuide = document.getElementById('btn-open-guide');
     const btnCloseGuide = document.getElementById('btn-close-guide');
     const guideDrawer = document.getElementById('guide-drawer');
@@ -262,10 +538,18 @@ class WebteeringApp {
       this.activeRoomId = roomId;
       this.localPlayerId = playerId;
       this.roomState = roomState;
+      this.isLocalReady = false;
 
-      document.getElementById('lobby-screen')?.classList.add('hidden');
-      document.getElementById('room-wait-screen')?.classList.remove('hidden');
-      
+      // Reveal room active labels and sync chat
+      document.getElementById('room-active-footer')?.classList.remove('hidden');
+      const badge = document.getElementById('active-room-code-badge');
+      if (badge) badge.innerText = `ROOM: ${roomId.toUpperCase()}`;
+
+      const log = document.getElementById('chat-messages-log');
+      if (log) {
+        log.innerHTML = `<p class="chat-system-msg">System: Joined room "${roomState.name}". Chat with your party!</p>`;
+      }
+
       this.updateLobbyWaitRoom();
     };
 
@@ -315,37 +599,29 @@ class WebteeringApp {
   private updateLobbyWaitRoom() {
     if (!this.roomState) return;
 
-    const titleEl = document.getElementById('room-title') as HTMLElement;
-    const seedEl = document.getElementById('room-map-seed') as HTMLElement;
-    const gridEl = document.getElementById('room-players-grid') as HTMLElement;
-    const btnStart = document.getElementById('btn-start-race') as HTMLElement;
+    this.rebuildLobby3D();
+
+    const btnReadyPlay = document.getElementById('btn-ready-play') as HTMLElement;
     const msgHost = document.getElementById('wait-host-msg') as HTMLElement;
 
-    titleEl.innerText = this.roomState.name;
-    seedEl.innerText = `Map Seed: ${this.roomState.mapSeed}`;
+    // Update bottom match details card
+    const settingsSum = document.getElementById('match-settings-summary');
+    if (settingsSum) {
+      settingsSum.innerText = `Classic Sequential • Seed ${this.roomState.mapSeed} • Squad of ${Object.keys(this.roomState.players).length}`;
+    }
 
-    gridEl.innerHTML = '';
-    
-    const players = Object.values(this.roomState.players);
-    players.forEach(p => {
-      const card = document.createElement('div');
-      const isMe = (p.id === this.localPlayerId);
-      card.className = `player-card ${isMe ? 'is-me' : ''}`;
-      card.innerHTML = `
-        <span class="player-color-dot" style="background-color: ${p.skinColor}; color: ${p.skinColor};"></span>
-        <span class="player-name-lbl">${p.name}</span>
-      `;
-      gridEl.appendChild(card);
-    });
-
-    // Host controller check (first player is host)
-    const isHost = (players[0]?.id === this.localPlayerId);
-    if (isHost && this.roomState.status === 'lobby') {
-      btnStart.classList.remove('hidden');
-      msgHost.classList.add('hidden');
-    } else {
-      btnStart.classList.add('hidden');
-      msgHost.classList.remove('hidden');
+    // Host controller check (first player in grid is host)
+    const isHost = this.isRoomHost();
+    if (btnReadyPlay) {
+      if (isHost) {
+        btnReadyPlay.innerText = 'START RACE ➔';
+        btnReadyPlay.className = 'btn-fortnite-play animate-pulse-glow';
+        msgHost.classList.add('hidden');
+      } else {
+        btnReadyPlay.innerText = this.isLocalReady ? 'READY UPED [✔]' : 'READY UP';
+        btnReadyPlay.className = `btn-fortnite-play ${this.isLocalReady ? 'ready-active' : ''}`;
+        msgHost.classList.remove('hidden');
+      }
     }
   }
 
@@ -356,8 +632,10 @@ class WebteeringApp {
     const status = this.roomState.status;
 
     if (status === 'countdown' || status === 'racing') {
-      // 1. Hide Lobby overlays
-      document.getElementById('room-wait-screen')?.classList.add('hidden');
+      // 1. Hide Lobby overlays and pedestals visual
+      this.isLobbyActive = false;
+      this.cleanupLobby3D();
+
       document.getElementById('lobby-screen')?.classList.add('hidden');
       document.getElementById('hud-container')?.classList.remove('hidden');
 
@@ -896,6 +1174,24 @@ class WebteeringApp {
   // --- CORE TICK UPDATE LOOP INTERACTION ---
   public update(delta: number) {
     if (!this.network || !this.controls || !this.elements || !this.hud || !this.terrain) return;
+
+    if (this.isLobbyActive) {
+      // 1. Slow cinematic orbit camera sway around the party squad pedestals
+      const angle = Date.now() * 0.00045;
+      this.engine.camera.position.set(Math.sin(angle) * 0.7, 1.8 + Math.sin(angle * 2) * 0.1, 3.2 + Math.cos(angle) * 0.4);
+      this.engine.camera.lookAt(new THREE.Vector3(0, 1.15, -0.3));
+
+      // Rotate player models slowly
+      if (this.lobbyPlayersMeshes[0]) {
+        this.lobbyPlayersMeshes[0].rotation.y += 0.85 * delta;
+      }
+
+      // Animate instanced foliage and terrain background visuals
+      const time = Date.now() * 0.001;
+      this.foliage.update(time);
+      this.terrain.update(time);
+      return;
+    }
 
     const serverTime = this.isTutorial || this.isFreeplay 
       ? Date.now() 

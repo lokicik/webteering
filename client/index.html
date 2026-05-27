@@ -17,6 +17,7 @@
   <div id="reticle"></div>
 
   <!-- Loading Screen -->
+  <!-- Loading Screen -->
   <div id="loading-screen" class="overlay">
     <div class="glass-panel text-center">
       <h1 class="logo glow">WEBTEERING</h1>
@@ -28,24 +29,208 @@
     </div>
   </div>
 
-  <!-- Main Menu & Lobby Screen -->
-  <div id="lobby-screen" class="overlay">
-    <div class="glass-panel lobby-panel">
-      <div class="lobby-header">
-        <h1 class="logo glow">WEBTEERING</h1>
-        <p>Voxel Navigation Wilderness</p>
+  <!-- Hero Landing Screen -->
+  <div id="landing-screen" class="overlay">
+    <div class="landing-container glass-panel text-center">
+      <h1 class="landing-logo logo glow">WEBTEERING</h1>
+      <p class="landing-subtitle">Procedural Voxel Wilderness Navigation</p>
+      <p class="landing-description">
+        Navigate untamed pixelated forests, navigate rugged elevation contours, and stamp sequential checkpoints in competitive real-time multiplayer.
+      </p>
+
+      <div class="landing-features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">🌲</div>
+          <h4>Voxel Wilderness</h4>
+          <p>Procedural biomes (Alpine, Gullies, Dunes) with active weather storms.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🧭</div>
+          <h4>Realism Controls</h4>
+          <p>Real physical magnetic needle oscillations and map speed fatigue penalties.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">📊</div>
+          <h4>Post-Race Splits</h4>
+          <p>Track e-card splits and view absolute post-mortem runner tracks on SVG maps.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">⚡</div>
+          <h4>Fortnite Lobby</h4>
+          <p>Real-time player pedestals, profile customizer locker, and party room chat.</p>
+        </div>
       </div>
 
-      <div class="lobby-columns">
-        <!-- Profile Customization -->
-        <div class="lobby-col profile-section">
-          <h3>Your Runner</h3>
-          <div class="form-group">
-            <label for="player-name">Runner Nickname</label>
-            <input type="text" id="player-name" maxlength="14" value="Runner_01">
+      <div class="landing-footer-actions">
+        <button id="btn-toggle-soundtrack" class="btn btn-secondary glow-hover">Toggle Soundtrack 🔊</button>
+        <button id="btn-enter-lobby" class="btn btn-accent glow-hover animate-pulse">ENTER COMMAND CENTER</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Unified Fortnite-style Lobby Screen -->
+  <div id="lobby-screen" class="overlay hidden">
+    <!-- Fortnite Top Navigation Header Bar -->
+    <header class="lobby-header-bar">
+      <div class="logo-area">
+        <span class="fortnite-logo glow">WEBTEERING</span>
+        <span class="logo-tag">BETA</span>
+      </div>
+      <nav class="lobby-tabs-nav">
+        <button id="tab-btn-play" class="lobby-tab active">PLAY</button>
+        <button id="tab-btn-locker" class="lobby-tab">LOCKER</button>
+        <button id="tab-btn-leaderboard" class="lobby-tab">LEADERBOARDS</button>
+        <button id="tab-btn-guide" class="lobby-tab">RULES & GUIDE</button>
+      </nav>
+      <div class="player-top-badge">
+        <span class="active-color-dot" id="header-color-dot" style="background-color: #ff3333;"></span>
+        <span class="header-runner-name" id="header-runner-lbl">Runner_01</span>
+      </div>
+    </header>
+
+    <!-- TAB CONTENT: PLAY (Matchmaking, Chat, 3D Pedestals overlays) -->
+    <div id="tab-content-play" class="tab-pane active">
+      <div class="lobby-layout-grid">
+        <!-- Left Side: Room Chat Panel -->
+        <div class="layout-column chat-column glass-panel-lobby">
+          <div class="panel-header-badge">💬 PARTY CHAT</div>
+          <div class="chat-history-container">
+            <div id="chat-messages-log" class="chat-messages-log">
+              <p class="chat-system-msg">System: Welcome to party chat. Join a room to talk with others in your squad!</p>
+            </div>
           </div>
-          <div class="form-group">
-            <label>Jersey Color</label>
+          <div class="chat-input-row">
+            <input type="text" id="chat-input" placeholder="Type a message..." maxlength="80">
+            <button id="btn-send-chat" class="btn btn-primary-sm">SEND</button>
+          </div>
+        </div>
+
+        <!-- Center Overlay: 3D Platform Floating Name Tags -->
+        <div class="squad-pedestals-overlay">
+          <!-- Dynamically populated in main.ts based on room connections -->
+          <div id="lobby-players-platforms" class="platforms-hud-list">
+            <div class="platform-nametag p-center active" id="tag-p1">
+              <span class="tag-color-indicator" style="background-color: #ff3333;"></span>
+              <span class="tag-name">Runner_01</span>
+              <span class="tag-status">HOST</span>
+            </div>
+            <div class="platform-nametag p-left hidden" id="tag-p2">
+              <span class="tag-color-indicator"></span>
+              <span class="tag-name">---</span>
+              <span class="tag-status">WAITING</span>
+            </div>
+            <div class="platform-nametag p-right hidden" id="tag-p3">
+              <span class="tag-color-indicator"></span>
+              <span class="tag-name">---</span>
+              <span class="tag-status">WAITING</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right Side: Matchmaking & Mode Settings -->
+        <div class="layout-column matchmaking-column glass-panel-lobby">
+          <div class="panel-header-badge">🛡️ COMMAND DECK</div>
+          
+          <div class="matchmaking-section">
+            <h4>Multiplayer Rooms</h4>
+            <div class="rooms-list-container">
+              <div id="rooms-list" class="rooms-list">
+                <!-- Dynamically populated -->
+                <p class="no-rooms">No active rooms. Create one below!</p>
+              </div>
+            </div>
+            
+            <div class="room-actions-fortnite">
+              <input type="text" id="new-room-id" placeholder="ROOM CODE" maxlength="6">
+              <button id="btn-create-room" class="btn btn-primary glow-hover">CREATE ROOM</button>
+            </div>
+            <div class="room-active-footer hidden" id="room-active-footer">
+              <span class="room-code-badge" id="active-room-code-badge">ROOM: ----</span>
+              <button id="btn-leave-room" class="btn btn-secondary-sm">LEAVE ROOM</button>
+            </div>
+          </div>
+
+          <div class="mode-settings-section">
+            <h4>Sandbox Parameters</h4>
+            
+            <div class="form-group-sm">
+              <label>Wilderness Biome</label>
+              <select id="sel-biome">
+                <option value="alpine">Alpine Spruce Forests</option>
+                <option value="dunes">Coastal Sand Dunes</option>
+                <option value="gullies">Rocky Ravines</option>
+                <option value="sprint">Scandinavian Sprint Park</option>
+              </select>
+            </div>
+            
+            <div class="form-group-sm">
+              <label>Time of Day</label>
+              <select id="sel-time">
+                <option value="noon">Sunny Noon</option>
+                <option value="sunset">Sunset Glow</option>
+                <option value="night">Spooky Night (Headlamp)</option>
+              </select>
+            </div>
+
+            <div class="form-group-sm">
+              <label>Game Type</label>
+              <select id="sel-game-mode">
+                <option value="classic">Classic (Sequential)</option>
+                <option value="rogaine">Rogaine (Free Order)</option>
+              </select>
+            </div>
+
+            <div class="form-grid-checkboxes">
+              <div class="form-group-sm-chk">
+                <input type="checkbox" id="chk-rain">
+                <label for="chk-rain">Rain Storm</label>
+              </div>
+              <div class="form-group-sm-chk">
+                <input type="checkbox" id="chk-gps" checked>
+                <label for="chk-gps">GPS Dot</label>
+              </div>
+            </div>
+            
+            <div class="form-group-sm">
+              <div class="range-labels">
+                <label>Mist Density</label>
+                <span id="fog-val-lbl">15%</span>
+              </div>
+              <input type="range" id="rng-fog" min="0" max="100" value="15">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Fortnite bottom action bar (READY / PLAY) -->
+      <footer class="lobby-action-footer">
+        <div class="match-info-card">
+          <span class="match-mode-label">SQUAD PUBLIC MATCH</span>
+          <span class="match-settings-summary" id="match-settings-summary">Classic Mode • Alpine Biome • Noon</span>
+        </div>
+        
+        <div class="lobby-trigger-area">
+          <p id="wait-host-msg" class="wait-msg hidden">Waiting for party leader to start race...</p>
+          <button id="btn-ready-play" class="btn-fortnite-play animate-pulse-glow">READY UP</button>
+          <!-- Keep old button hidden but wired up so code references do not break -->
+          <button id="btn-start-race" class="hidden"></button>
+        </div>
+      </footer>
+    </div>
+
+    <!-- TAB CONTENT: LOCKER (Nicknames, Colors, Stats) -->
+    <div id="tab-content-locker" class="tab-pane hidden">
+      <div class="locker-layout-grid">
+        <div class="locker-col customize-section glass-panel-lobby">
+          <div class="panel-header-badge">👤 RUNNER CUSTOMIZER</div>
+          
+          <div class="form-group-locker">
+            <label for="player-name">Runner Call Sign (Nickname)</label>
+            <input type="text" id="player-name" maxlength="14" value="Runner_01" placeholder="Runner Name">
+          </div>
+
+          <div class="form-group-locker">
+            <label>Jersey Colors</label>
             <div class="color-picker-grid">
               <button class="color-btn active" style="background-color: #ff3333;" data-color="#ff3333"></button>
               <button class="color-btn" style="background-color: #ffaa00;" data-color="#ffaa00"></button>
@@ -56,100 +241,153 @@
             </div>
           </div>
           
-          <!-- Mode Select Shortcuts -->
-          <div class="mode-shortcuts" style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
-            <button id="btn-tutorial-start" class="btn btn-secondary glow-hover">Run Tutorial</button>
-            <button id="btn-freeplay-start" class="btn btn-accent glow-hover">Freeplay Sandbox</button>
-            <button id="btn-relax-start" class="btn btn-primary glow-hover" style="grid-column: 1 / span 2; margin-top: 4px;">Blind Search Mode 🧭</button>
-            <button id="btn-open-guide" class="btn btn-secondary glow-hover" style="grid-column: 1 / span 2; margin-top: 4px;">Orienteering Guide 📖</button>
+          <div class="quick-runs-section">
+            <label>Offline Solo Simulations</label>
+            <div class="shortcuts-grid">
+              <button id="btn-tutorial-start" class="btn btn-secondary-sm glow-hover">Run Tutorial</button>
+              <button id="btn-freeplay-start" class="btn btn-accent-sm glow-hover">Freeplay Sandbox</button>
+              <button id="btn-relax-start" class="btn btn-primary-sm glow-hover">Blind Search Mode 🧭</button>
+            </div>
           </div>
         </div>
 
-        <!-- Room Browser -->
-        <div class="lobby-col rooms-section">
-          <h3>Multiplayer Rooms</h3>
-          <div class="rooms-list-container">
-            <div id="rooms-list" class="rooms-list">
-              <!-- Dynamically populated -->
-              <p class="no-rooms">No active rooms. Create one below!</p>
+        <div class="locker-col career-section glass-panel-lobby">
+          <div class="panel-header-badge">🏆 CAREER HIGHLIGHTS</div>
+          <div class="career-stats-container">
+            <div class="stat-box">
+              <span class="stat-number" id="stat-punches">24</span>
+              <span class="stat-title">PUNCHES LOGGED</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-number" id="stat-runs">4</span>
+              <span class="stat-title">COMPLETED RUNS</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-number">101</span>
+              <span class="stat-title">TRAINING TIER</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-number" style="color: #ffaa00;">GOLD</span>
+              <span class="stat-title">ORIENTEERING CLASS</span>
             </div>
           </div>
 
-          <div class="room-actions">
-            <input type="text" id="new-room-id" placeholder="room-code" maxlength="8">
-            <button id="btn-create-room" class="btn btn-primary">Create Room</button>
+          <div class="trophy-room">
+            <h4>Achievement Medals</h4>
+            <div class="medals-row">
+              <div class="medal-badge" title="Perfect sequential course stamp">🥇 Course Perfect</div>
+              <div class="medal-badge" title="Stamped checkpoint during rain storm">🌧️ Rain Runner</div>
+              <div class="medal-badge" title="Completed relaxed GPS-free course">🧭 Blind Navigator</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB CONTENT: LEADERBOARDS (Top Times lists) -->
+    <div id="tab-content-leaderboard" class="tab-pane hidden">
+      <div class="leaderboard-layout glass-panel-lobby">
+        <div class="panel-header-badge">🌍 GLOBAL LEADERBOARD</div>
+        <div class="table-scroll-wrapper">
+          <table class="scoreboard-table">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Runner</th>
+                <th>Splits</th>
+                <th>Game Mode</th>
+                <th>Time Record</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="is-me-row">
+                <td>#1</td>
+                <td>Runner_01 (You)</td>
+                <td>6 / 6 Cps</td>
+                <td>Alpine Classic</td>
+                <td style="color: #00ccff; font-family: var(--font-mono); font-weight: bold;">01:34.25</td>
+              </tr>
+              <tr>
+                <td>#2</td>
+                <td>Sven_Norse</td>
+                <td>6 / 6 Cps</td>
+                <td>Sprint Park Classic</td>
+                <td style="font-family: var(--font-mono);">01:42.12</td>
+              </tr>
+              <tr>
+                <td>#3</td>
+                <td>Forest_Gazelle</td>
+                <td>6 / 6 Cps</td>
+                <td>Alpine Classic</td>
+                <td style="font-family: var(--font-mono);">01:48.80</td>
+              </tr>
+              <tr>
+                <td>#4</td>
+                <td>Gully_Skipper</td>
+                <td>6 / 6 Cps</td>
+                <td>Rocky Gullies Rogaine</td>
+                <td style="font-family: var(--font-mono);">01:59.10</td>
+              </tr>
+              <tr>
+                <td>#5</td>
+                <td>SandDune_Stomper</td>
+                <td>6 / 6 Cps</td>
+                <td>Dunes Rogaine</td>
+                <td style="font-family: var(--font-mono);">02:08.45</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB CONTENT: RULES & GUIDE (Orienteering Manual) -->
+    <div id="tab-content-guide" class="tab-pane hidden">
+      <div class="guide-layout glass-panel-lobby">
+        <div class="panel-header-badge">📖 ORIENTEERING MANUAL</div>
+        <div class="guide-scrollable-content">
+          <div class="guide-section">
+            <h3>1. Voxel Wilderness Navigation</h3>
+            <p>Welcome to <b>Webteering</b>! Orienteering is a tactical sport where you must navigate to a series of checkpoints (flags) in the exact numerical sequence using only a topographic map and a magnetic compass.</p>
+            <p>Move with <b>WASD</b>, look with your <b>Mouse</b>, and press <b>E</b> to punch checkpoints when standing near them.</p>
+          </div>
+          <div class="guide-section">
+            <h3>2. The Topographic Map (ISOM Legends)</h3>
+            <p>The map uses standard international orienteering color codes:</p>
+            <div class="guide-symbols-grid">
+              <div class="symbol-card"><span class="symbol-color-dot" style="background:#ffdd00;"></span><b>Yellow Fields</b><br>Open terrain, fast running.</div>
+              <div class="symbol-card"><span class="symbol-color-dot" style="background:#ffffff;"></span><b>White Forest</b><br>Clean runnable forest.</div>
+              <div class="symbol-card"><span class="symbol-color-dot" style="background:#d0f0d0;"></span><b>Light Green</b><br>Light foliage, slower.</div>
+              <div class="symbol-card"><span class="symbol-color-dot" style="background:#60c060;"></span><b>Medium Green</b><br>Dense forest, heavy drag.</div>
+              <div class="symbol-card"><span class="symbol-color-dot" style="background:#00a0f0;"></span><b>Blue Lakes</b><br>Deep water, swim speed.</div>
+              <div class="symbol-card"><span class="symbol-color-dot" style="background:#a06020;"></span><b>Brown Paths</b><br>Gravel path, speed boost!</div>
+            </div>
+            <p><b>Contour Lines:</b> The brown loops represent changes in elevation. The closer the loops are to each other, the steeper the voxel hill slope!</p>
+          </div>
+          <div class="guide-section">
+            <h3>3. Realism Controls & Compass</h3>
+            <p><b>Compass Needle Wobble:</b> Running fast or jumping causes the magnetic needle to oscillate and swing violently due to lateral physical momentum. To take precise bearings, you must **slow down to a walk or stand still**!</p>
+            <p><b>Map Speed Penalty:</b> Reading a map while running limits your focus. Opening the map panel (<b>M</b> key) applies an immediate **15% speed penalty**.</p>
+            <p><b>Map Rotation Modes:</b>
+              <ul>
+                <li><b>North-Up:</b> Map remains static.</li>
+                <li><b>Heading-Up:</b> Map automatically rotates in reverse to match your camera direction.</li>
+                <li><b>Manual Mode:</b> Use <b>Q</b> and <b>R</b> keys to rotate the map sheet manually in your hands!</li>
+              </ul>
+            </p>
+          </div>
+          <div class="guide-section">
+            <h3>4. E-Card Punching & Splits</h3>
+            <p>Checkpoints are marked as red circles on the map. Stand within 3 meters and press <b>E</b> to stamp your electronic SportIdent e-card. Out-of-order punches trigger an error buzzer. Your splits and post-race paths are tracked for final review!</p>
           </div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Orienteering Rules & Manual Guide Drawer -->
-  <div id="guide-drawer" class="overlay hidden" style="z-index: 10;">
-    <div class="glass-panel guide-panel">
-      <div class="guide-header">
-        <h2>Rules of Orienteering</h2>
-        <button id="btn-close-guide" class="map-close-btn">&times;</button>
-      </div>
-      <div class="guide-content">
-        <div class="guide-section">
-          <h3>1. Voxel Wilderness Navigation</h3>
-          <p>Welcome to <b>Webteering</b>! Orienteering is a tactical sport where you must navigate to a series of checkpoints (flags) in the exact numerical sequence using only a topographic map and a magnetic compass.</p>
-          <p>Move with <b>WASD</b>, look with your <b>Mouse</b>, and press <b>E</b> to punch checkpoints when standing near them.</p>
-        </div>
-        <div class="guide-section">
-          <h3>2. The Topographic Map (ISOM Legends)</h3>
-          <p>The map uses standard international orienteering color codes:</p>
-          <div class="guide-symbols-grid">
-            <div class="symbol-card"><span class="symbol-color-dot" style="background:#ffdd00;"></span><b>Yellow Fields</b><br>Open terrain, fast.</div>
-            <div class="symbol-card"><span class="symbol-color-dot" style="background:#ffffff;"></span><b>White Forest</b><br>Clean runnable forest.</div>
-            <div class="symbol-card"><span class="symbol-color-dot" style="background:#d0f0d0;"></span><b>Light Green</b><br>Light foliage, slow.</div>
-            <div class="symbol-card"><span class="symbol-color-dot" style="background:#60c060;"></span><b>Medium Green</b><br>Dense forest, drag.</div>
-            <div class="symbol-card"><span class="symbol-color-dot" style="background:#00a0f0;"></span><b>Blue Lakes</b><br>Deep water, swim.</div>
-            <div class="symbol-card"><span class="symbol-color-dot" style="background:#a06020;"></span><b>Brown Paths</b><br>Gravel path, boost.</div>
-          </div>
-          <p><b>Contour Lines:</b> The brown loops represent changes in elevation. The closer the loops are to each other, the steeper the voxel hill slope!</p>
-        </div>
-        <div class="guide-section">
-          <h3>3. Realism Controls & Compass</h3>
-          <p><b>Compass Needle Wobble:</b> Running fast or jumping causes the magnetic needle to oscillate and swing violently due to lateral physical momentum. To take precise bearings, you must **slow down to a walk or stand still**!</p>
-          <p><b>Map Speed Penalty:</b> Reading a map while running limits your focus. Opening the map panel (<b>M</b> key) applies an immediate **15% speed penalty**.</p>
-          <p><b>Map Rotation Modes:</b>
-            <ul>
-              <li><b>North-Up:</b> Map remains static.</li>
-              <li><b>Heading-Up:</b> Map automatically rotates in reverse to match your camera direction.</li>
-              <li><b>Manual Mode:</b> Use <b>Q</b> and <b>R</b> keys to rotate the map sheet manually in your hands!</li>
-            </ul>
-          </p>
-        </div>
-        <div class="guide-section">
-          <h3>4. E-Card Punching & Splits</h3>
-          <p>Checkpoints are marked as red circles on the map. Stand within 3 meters and press <b>E</b> to stamp your electronic SportIdent e-card. Out-of-order punches trigger an error buzzer. Your splits and post-race paths are tracked for final review!</p>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- In-game Lobby Room Screen -->
-  <div id="room-wait-screen" class="overlay hidden">
-    <div class="glass-panel room-wait-panel">
-      <h2 id="room-title">Room: lobby-code</h2>
-      <p id="room-map-seed">Map Seed: -----</p>
-      
-      <div class="player-grid-container">
-        <h3>Connected Runners</h3>
-        <div id="room-players-grid" class="players-grid">
-          <!-- Dynamically populated -->
-        </div>
-      </div>
-
-      <div class="room-footer">
-        <button id="btn-leave-room" class="btn btn-secondary">Leave Room</button>
-        <button id="btn-start-race" class="btn btn-primary glow-active hidden">Start Race!</button>
-        <p id="wait-host-msg" class="wait-msg">Waiting for host to start the race...</p>
-      </div>
-    </div>
-  </div>
+  <!-- Orienteering Rules & Manual Guide Drawer (Legacy keep for safety, hidden) -->
+  <div id="guide-drawer" class="overlay hidden"></div>
+  <div id="room-wait-screen" class="overlay hidden"></div>
 
   <!-- In-game HUD Overlays -->
   <div id="hud-container" class="hidden">

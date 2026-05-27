@@ -186,7 +186,7 @@ export class Elements {
   // --- MULTIPLAYER OTHER RUNNERS SYNCHRONIZATION ---
 
   // Build a charming voxel character skin model
-  private buildVoxelRunner(colorHex: string): THREE.Group {
+  public buildVoxelRunner(colorHex: string): THREE.Group {
     const runner = new THREE.Group();
 
     // Materials

@@ -13,6 +13,8 @@ export class Network {
   public onPositionsUpdate: ((players: { [id: string]: PlayerState }) => void) | null = null;
   public onPlayerPunched: ((data: { playerId: string; checkpointIndex: number; isFinish: boolean; roomState: RoomState }) => void) | null = null;
   public onRoomsList: ((rooms: any[]) => void) | null = null;
+  public onChatMessage: ((data: { sender: string; msg: string; color: string }) => void) | null = null;
+
 
   constructor() {
     // Resolve backend endpoint (same host in production, localhost:3001 in dev)
@@ -57,7 +59,12 @@ export class Network {
     this.socket.on('rooms-list', (rooms: any[]) => {
       if (this.onRoomsList) this.onRoomsList(rooms);
     });
+
+    this.socket.on('chat-message', (data: { sender: string; msg: string; color: string }) => {
+      if (this.onChatMessage) this.onChatMessage(data);
+    });
   }
+
 
   // NTP-like time synchronization protocol
   public syncTime() {
@@ -126,5 +133,9 @@ export class Network {
       checkpointIndex,
       clientTime: this.getServerTime()
     });
+  }
+
+  public sendChatMessage(message: string) {
+    this.socket.emit('send-chat-message', message);
   }
 }

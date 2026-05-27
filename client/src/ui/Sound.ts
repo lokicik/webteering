@@ -473,5 +473,62 @@ export class Sound {
       // Fail silently
     }
   }
+
+  // Beautiful Ambient Synthesized Soundtrack (Sine Wave Chord Pad Progression)
+  private static soundtrackInterval: any = null;
+  public static startSoundtrack() {
+    try {
+      const ctx = this.getContext();
+      if (this.soundtrackInterval) return;
+
+      const chords = [
+        [220.00, 329.63, 440.00, 659.25], // A Minor
+        [261.63, 329.63, 523.25, 783.99], // C Major
+        [349.23, 440.00, 523.25, 698.46], // F Major
+        [293.66, 349.23, 587.33, 880.00]  // D Minor
+      ];
+      let chordIndex = 0;
+
+      const playChord = () => {
+        const now = ctx.currentTime;
+        const activeChord = chords[chordIndex];
+        chordIndex = (chordIndex + 1) % chords.length;
+
+        // Trigger each note in the chord pad
+        activeChord.forEach((freq, idx) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, now);
+
+          // Soft slow attack & release to simulate breathing analog pads
+          gain.gain.setValueAtTime(0.001, now);
+          gain.gain.linearRampToValueAtTime(0.012 - (idx * 0.001), now + 1.2); // soft swell
+          gain.gain.setValueAtTime(0.012 - (idx * 0.001), now + 3.2);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 4.8); // gentle fade
+
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+
+          osc.start(now);
+          osc.stop(now + 4.8);
+        });
+      };
+
+      // Trigger first note immediately and loop
+      playChord();
+      this.soundtrackInterval = setInterval(playChord, 5000);
+    } catch (err) {
+      console.warn('Soundtrack synthesis failed', err);
+    }
+  }
+
+  public static stopSoundtrack() {
+    if (this.soundtrackInterval) {
+      clearInterval(this.soundtrackInterval);
+      this.soundtrackInterval = null;
+    }
+  }
 }
 
