@@ -247,24 +247,29 @@ export class Foliage {
         '#include <begin_vertex>',
         `
           #include <begin_vertex>
-          // Sway amount scales with height (y) to keep base rooted
-          if (position.y > 0.05) {
-            float swayX = sin(uTime * 3.0 + position.x * 0.4) * 0.08 * position.y;
-            float swayZ = cos(uTime * 2.6 + position.z * 0.4) * 0.08 * position.y;
-            transformed.x += swayX;
-            transformed.z += swayZ;
-          }
+          // Quadratic bend, phased by height only: bases stay rooted, tips
+          // sway, and trunk + canopy vertices at the same height displace
+          // together — the old x/z-phased linear sway sheared whole crowns
+          // sideways off their unswayed trunks.
+          float bendW = position.y * position.y * 0.012;
+          transformed.x += sin(uTime * 1.7 + position.y * 0.5) * bendW;
+          transformed.z += cos(uTime * 1.5 + position.y * 0.5) * bendW;
         `
       );
     };
 
-    // 1. Trunk material: procedural bark with ridged normal map
+    // 1. Trunk material: procedural bark with ridged normal map.
+    //    Gets the same wind bend as the canopy so trees flex as one unit.
     const bark = createBarkTexture(256);
     this.trunkMaterial = new THREE.MeshLambertMaterial({
       map: bark.albedo,
       normalMap: bark.normal,
       normalScale: new THREE.Vector2(0.8, 0.8)
     });
+    this.trunkMaterial.onBeforeCompile = (shader) => {
+      windShaderModifier(shader);
+      this.trunkMaterial.userData.shader = shader;
+    };
 
     // 2a. Near-LOD conifer: alpha-tested needle branch cards with wind sway.
     //     Opaque + alphaTest so depth-based effects (AO, god rays) see real silhouettes.
@@ -829,6 +834,9 @@ export class Foliage {
     }
     if (this.branchMaterial.userData.shader) {
       this.branchMaterial.userData.shader.uniforms.uTime.value = time;
+    }
+    if (this.trunkMaterial.userData.shader) {
+      this.trunkMaterial.userData.shader.uniforms.uTime.value = time;
     }
 
     if (playerPos) {

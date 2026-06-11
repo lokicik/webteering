@@ -6,6 +6,7 @@ const SCRATCH_FLEE_DIR = new THREE.Vector3();
 export interface CollidableTerrain {
   getTerrainHeight(x: number, z: number): number;
   getBiome(): string;
+  getMapSize(): number;
 }
 
 export class WildlifeManager {
@@ -27,12 +28,18 @@ export class WildlifeManager {
     this.terrain = terrain;
   }
 
+  // Must be called whenever the active Terrain instance is replaced, or
+  // creatures keep sampling heights from the old disposed heightfield
+  public setTerrain(terrain: CollidableTerrain) {
+    this.terrain = terrain;
+  }
+
   public spawnCreatures(count: number = 30) {
     // Clear old creatures
     this.creatures.forEach(c => this.scene.remove(c.mesh));
     this.creatures = [];
 
-    const halfMap = 180; // map size is 384, spawn within safe bounds
+    const halfMap = Math.max(16, this.terrain.getMapSize() / 2 - 8);
     for (let i = 0; i < count; i++) {
       const type = Math.random() < 0.65 ? 'rabbit' : 'deer';
       

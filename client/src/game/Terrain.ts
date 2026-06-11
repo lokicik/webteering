@@ -14,6 +14,9 @@ export class Terrain {
   
   // Height and type caches (for custom imported DEM maps)
   private heightMap: { [key: string]: number } = {};
+  // Tracked as a flag: Object.keys(heightMap).length per lookup would allocate
+  // a 16k+ entry array on EVERY height sample once a custom map is loaded
+  private hasCustomHeightmap = false;
   private typeMap: { [key: string]: VoxelType } = {};
   // Bounded cache for procedural type lookups (cleared wholesale when full)
   private typeCache = new Map<string, VoxelType>();
@@ -265,15 +268,13 @@ export class Terrain {
           vec3 shallowColor = vec3(0.8, 0.95, 1.0); // bright shoreline white/teal foam
           vec3 deepColor = diffuseColor.rgb; // base biome water color (e.g. blue)
 
-          // Shoreline foam threshold
-          if (vDepth < 0.35) {
-            float foam = clamp((0.35 - vDepth) / 0.35, 0.0, 1.0);
-            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0, 1.0, 1.0), foam * 0.95);
-            diffuseColor.a = mix(0.72, 0.95, foam);
-          } else {
-            diffuseColor.rgb = mix(shallowColor, deepColor, depthFactor);
-            diffuseColor.a = mix(0.48, 0.85, depthFactor);
-          }
+          // Shoreline foam: continuous falloff (a hard depth cutoff traced
+          // jagged staircases along terraced shorelines)
+          float foam = 1.0 - smoothstep(0.0, 0.45, vDepth);
+          vec3 bodyColor = mix(shallowColor, deepColor, depthFactor);
+          float bodyAlpha = mix(0.48, 0.85, depthFactor);
+          diffuseColor.rgb = mix(bodyColor, vec3(1.0), foam * 0.9);
+          diffuseColor.a = mix(bodyAlpha, 0.95, foam);
 
           // Wave crest foam (was per-vertex CPU color writes)
           float crestFoam = clamp((vWave - 0.03) / 0.15, 0.0, 1.0);
@@ -290,34 +291,51 @@ export class Terrain {
 
   // Retrieve dynamic elevation at arbitrary fractional coordinates
   public getTerrainHeight(x: number, z: number): number {
-    const half = this.mapSize / 2;
-    if (Math.abs(x) > half || Math.abs(z) > half) {
-      return 25.0; // boundary wall
+    if (this.hasCustomHeightmap) {
+      const half = this.mapSize / 2;
+      const dOut = Math.max(Math.abs(x) - half, Math.abs(z) - half);
+      if (dOut > 0) {
+        // Smooth boundary ridge instead of a sheer 25m wall: ramp from the
+        // edge height to a gentle cap over ~28m (heightMap keys span
+        // [-half, half-1], hence the asymmetric clamp)
+        const ex = Math.max(-half, Math.min(half - 1, x));
+        const ez = Math.max(-half, Math.min(half - 1, z));
+        const edgeH = this.bilinearCustomHeight(ex, ez);
+        const cap = Math.min(24, edgeH + 9);
+        const t = Math.min(1, dOut / 28);
+        const s = t * t * (3 - 2 * t);
+        return edgeH + (cap - edgeH) * s;
+      }
+      return this.bilinearCustomHeight(x, z);
     }
 
-    const isCustom = Object.keys(this.heightMap).length > 0;
-    if (isCustom) {
-      // Bilinear interpolation for imported DEM custom heightmaps to make them super smooth!
-      const x0 = Math.floor(x);
-      const x1 = x0 + 1;
-      const z0 = Math.floor(z);
-      const z1 = z0 + 1;
-
-      const h00 = this.heightMap[`${x0},${z0}`] ?? 4.0;
-      const h10 = this.heightMap[`${x1},${z0}`] ?? 4.0;
-      const h01 = this.heightMap[`${x0},${z1}`] ?? 4.0;
-      const h11 = this.heightMap[`${x1},${z1}`] ?? 4.0;
-
-      const tx = x - x0;
-      const tz = z - z0;
-
-      const h0 = h00 + tx * (h10 - h00);
-      const h1 = h01 + tx * (h11 - h01);
-      return h0 + tz * (h1 - h0);
-    }
-
-    // Evaluate procedurally with high float precision
+    // Procedural path: TerrainCore ramps its own boundary ridge, and the
+    // noise is defined everywhere (the far ring samples beyond the map)
     return this.computeProceduralHeight(x, z);
+  }
+
+  // Bilinear interpolation for imported DEM custom heightmaps. Sample keys
+  // are clamped into the stored grid so the outermost metre doesn't blend
+  // toward a missing-key fallback height.
+  private bilinearCustomHeight(x: number, z: number): number {
+    const half = this.mapSize / 2;
+    const cl = (v: number) => Math.max(-half, Math.min(half - 1, v));
+    const x0 = Math.floor(x);
+    const x1 = x0 + 1;
+    const z0 = Math.floor(z);
+    const z1 = z0 + 1;
+
+    const h00 = this.heightMap[`${cl(x0)},${cl(z0)}`] ?? 4.0;
+    const h10 = this.heightMap[`${cl(x1)},${cl(z0)}`] ?? 4.0;
+    const h01 = this.heightMap[`${cl(x0)},${cl(z1)}`] ?? 4.0;
+    const h11 = this.heightMap[`${cl(x1)},${cl(z1)}`] ?? 4.0;
+
+    const tx = x - x0;
+    const tz = z - z0;
+
+    const h0 = h00 + tx * (h10 - h00);
+    const h1 = h01 + tx * (h11 - h01);
+    return h0 + tz * (h1 - h0);
   }
 
   // Retrieve voxel material/runnability type
@@ -353,7 +371,7 @@ export class Terrain {
 
   private computeProceduralType(x: number, z: number): VoxelType {
     // Pure procedural worlds share the exact core math with the server
-    if (Object.keys(this.heightMap).length === 0) {
+    if (!this.hasCustomHeightmap) {
       return this.core.getType(x, z);
     }
 
@@ -381,6 +399,7 @@ export class Terrain {
     this.heightMap = {};
     this.typeMap = {};
     this.typeCache.clear();
+    this.hasCustomHeightmap = true;
 
     const half = size / 2;
     for (let rz = 0; rz < size; rz++) {
@@ -527,6 +546,18 @@ export class Terrain {
   // detail shader — fog and distance carry it. Hilltop views get rolling
   // forest ridges out to the fog line instead of a void past the 5x5 grid.
   private rebuildFarRing(centerX: number, centerZ: number) {
+    // Imported maps have no terrain beyond their bounds — a 512m procedural
+    // ring around a small custom map rendered as a giant boundary plateau
+    if (this.hasCustomHeightmap) {
+      if (this.farRingMesh) {
+        this.chunkGroup.remove(this.farRingMesh);
+        this.farRingMesh.geometry.dispose();
+        (this.farRingMesh.material as THREE.Material).dispose();
+        this.farRingMesh = null;
+      }
+      return;
+    }
+
     const ringSize = 512;
     const segments = 24;
 
@@ -696,6 +727,7 @@ export class Terrain {
 
   public dispose() {
     if (this.farRingMesh) {
+      this.farRingMesh.geometry.dispose();
       (this.farRingMesh.material as THREE.Material).dispose();
       this.farRingMesh = null;
     }

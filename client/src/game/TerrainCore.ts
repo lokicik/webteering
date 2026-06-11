@@ -71,13 +71,26 @@ export class TerrainCore {
     this.waterLevel = waterLevel;
   }
 
-  // Procedural continuous noise equation per biome
+  // Procedural continuous noise equation per biome, with a smooth boundary
+  // ridge: heights ramp from the edge terrain up to 25 over ~28m instead of
+  // jumping to a sheer cliff wall (which rendered as giant flat slabs)
   public getHeight(x: number, z: number): number {
     const half = this.mapSize / 2;
-    if (Math.abs(x) >= half - 4 || Math.abs(z) >= half - 4) {
-      return 25.0; // Outer boundary lock
+    const edge = half - 4;
+    const dOut = Math.max(Math.abs(x) - edge, Math.abs(z) - edge);
+    if (dOut <= 0) {
+      return this.interiorHeight(x, z);
     }
 
+    const ex = Math.max(-edge, Math.min(edge, x));
+    const ez = Math.max(-edge, Math.min(edge, z));
+    const edgeH = this.interiorHeight(ex, ez);
+    const t = Math.min(1, dOut / 28);
+    const s = t * t * (3 - 2 * t); // smoothstep
+    return edgeH + (25 - edgeH) * s;
+  }
+
+  private interiorHeight(x: number, z: number): number {
     if (this.biome === 'sprint') {
       // Neat flat park lawns
       const n1 = this.noiseGen.noise(x * 0.004, z * 0.004) * 2.5;
