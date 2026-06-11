@@ -73,6 +73,13 @@ io.on('connection', (socket: Socket) => {
 
     // Join room
     const joinResult = roomManager.joinRoom(cleanRoomId, socket.id, playerName || 'Runner', skinColor || '#ff0000');
+    if (joinResult === 'in-progress') {
+      socket.emit('join-rejected', {
+        roomId: cleanRoomId,
+        reason: 'Race in progress — wait for the room to return to the lobby.'
+      });
+      return;
+    }
     if (joinResult) {
       socket.join(cleanRoomId);
       console.log(`Player ${playerName} (${socket.id}) joined room: ${cleanRoomId}`);

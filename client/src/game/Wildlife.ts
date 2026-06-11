@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 
+// Pooled work vector for per-frame flee calculations
+const SCRATCH_FLEE_DIR = new THREE.Vector3();
+
 export interface CollidableTerrain {
   getTerrainHeight(x: number, z: number): number;
   getBiome(): string;
@@ -206,7 +209,7 @@ export class WildlifeManager {
 
       if (c.state === 'fleeing') {
         // Run away: calculate vector directly from player to creature
-        const fleeDir = new THREE.Vector3()
+        const fleeDir = SCRATCH_FLEE_DIR
           .copy(c.mesh.position)
           .sub(playerPos);
         fleeDir.y = 0;

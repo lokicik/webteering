@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { QualityLevel, QUALITY_PRESETS, loadQualityLevel, saveQualityLevel } from './game/Quality';
+import { TerrainCore, generateSmartCourse, lcg } from './game/TerrainCore';
 import { Engine } from './game/Engine';
 import { Terrain } from './game/Terrain';
 import { Controls } from './game/Controls';
@@ -35,6 +36,8 @@ class WebteeringApp {
   private isRogaine = false;
   private rogainePunchedCps: number[] = [];
   private rogainePoints = 0;
+  private rogaineEnded = false;
+  private tutorialCourse: Checkpoint[] = [];
 
   // Advanced Upgrades tracking
   private playerPaths: { [id: string]: { x: number; z: number }[] } = {};
@@ -55,6 +58,8 @@ class WebteeringApp {
   private handheldGroup: THREE.Group | null = null;
   private handheldMapMesh: THREE.Mesh | null = null;
   private handheldMapTexture: THREE.CanvasTexture | null = null;
+  private lastHandheldMapStamp = -1;
+  private scratchLookDir = new THREE.Vector3(); // pooled per-frame work vector
   private handheldCompassGroup: THREE.Group | null = null;
   private handheldNeedle: THREE.Group | null = null;
   private handheldBezelRing: THREE.Group | null = null;
@@ -125,8 +130,37 @@ class WebteeringApp {
     // Hook graphics quality selectors (lobby + in-game panels stay in sync)
     this.initQualityControls();
 
+    // Mirror the in-game drawer controls onto the lobby ones (which own the
+    // actual handlers). Previously both panels shared duplicate IDs, so the
+    // in-game copies were dead elements that silently did nothing.
+    this.bindSettingPair('sel-time', 'sel-time-game', 'change');
+    this.bindSettingPair('sel-biome', 'sel-biome-game', 'change');
+    this.bindSettingPair('rng-fog', 'rng-fog-game', 'input');
+    this.bindSettingPair('chk-rain', 'chk-rain-game', 'change');
+
     // 6. Start the engine loop
     this.engine.start();
+  }
+
+  // Two-way binding between a lobby control (owner of the real handler) and
+  // its in-game drawer twin. The twin forwards changes to the owner and stays
+  // visually in sync when the owner changes.
+  private bindSettingPair(ownerId: string, twinId: string, evt: 'change' | 'input') {
+    const owner = document.getElementById(ownerId) as HTMLInputElement | null;
+    const twin = document.getElementById(twinId) as HTMLInputElement | null;
+    if (!owner || !twin) return;
+
+    const copy = (src: HTMLInputElement, dst: HTMLInputElement) => {
+      if (src.type === 'checkbox') dst.checked = src.checked;
+      else dst.value = src.value;
+    };
+
+    copy(owner, twin);
+    twin.addEventListener(evt, () => {
+      copy(twin, owner);
+      owner.dispatchEvent(new Event(evt));
+    });
+    owner.addEventListener(evt, () => copy(owner, twin));
   }
 
   private initQualityControls() {
@@ -713,10 +747,21 @@ class WebteeringApp {
         Sound.playTick(false);
       }
 
-      // Check if finished
+      // Per-player finish: show YOUR podium the moment you cross, instead of
+      // waiting for the slowest runner. The room keeps racing; room-updates
+      // keep the podium table live as others finish.
       if (isFinish && isMe) {
         this.controls.unlock();
+        this.showScoreboardSummary();
       }
+    };
+
+    this.network.onJoinRejected = ({ reason }) => {
+      const log = document.getElementById('chat-messages-log');
+      if (log) {
+        log.innerHTML += `<p class="chat-system-msg">System: ${reason}</p>`;
+      }
+      Sound.playError();
     };
 
     // Mode select listeners (Tutorial & Sandbox)
@@ -794,6 +839,51 @@ class WebteeringApp {
       // Show podium table
       this.showScoreboardSummary();
     }
+  }
+
+  // Spiral-search the nearest runnable spot (not water/cliff, below snowline)
+  private nudgeToRunnable(core: TerrainCore, x: number, z: number): { x: number; z: number } {
+    const ok = (px: number, pz: number) => {
+      const h = core.getHeight(px, pz);
+      if (h < core.waterLevel + 0.6 || h > 11) return false;
+      const t = core.getType(px, pz);
+      return t !== 'water' && t !== 'cliff';
+    };
+    if (ok(x, z)) return { x, z };
+    for (let r = 2; r <= 40; r += 2) {
+      for (let a = 0; a < 8; a++) {
+        const px = Math.round(x + Math.cos((a * Math.PI) / 4) * r);
+        const pz = Math.round(z + Math.sin((a * Math.PI) / 4) * r);
+        if (ok(px, pz)) return { x: px, z: pz };
+      }
+    }
+    return { x, z };
+  }
+
+  // Terrain-aware course generation (same TerrainCore math the server uses)
+  private buildSmartCourse(seed: number, biome: string): Checkpoint[] {
+    const core = new TerrainCore(seed, biome);
+    const points = generateSmartCourse(core, seed, 5);
+    const random = lcg(seed);
+    const descriptions = [
+      'Boulder, North-East side',
+      'Depression, shallow part',
+      'Gully, upper end',
+      'Spur, foot of slope',
+      'Thicket, South edge',
+      'Rock wall, base',
+      'Hill, top'
+    ];
+
+    const course: Checkpoint[] = points.map((p, idx) => ({
+      id: idx + 1,
+      code: (31 + idx).toString(),
+      x: p.x,
+      z: p.z,
+      description: descriptions[Math.floor(random() * descriptions.length)]
+    }));
+    course.push({ id: points.length + 1, code: 'F', x: 0, z: 10, description: 'Finish banner' });
+    return course;
   }
 
   private reloadTerrainAndCourse(seed: number, course: Checkpoint[], biome: string = 'alpine') {
@@ -942,11 +1032,17 @@ class WebteeringApp {
     this.isLobbyActive = false;
     this.cleanupLobby3D();
 
-    // Load static tutorial seed (seed = 101)
+    // Load static tutorial seed (seed = 101). The classic spots are validated
+    // against the actual terrain and nudged onto runnable ground if a noise
+    // pocket put them in water or on a cliff.
+    const tutorialCore = new TerrainCore(101, 'alpine');
+    const cp1 = this.nudgeToRunnable(tutorialCore, 20, 20);
+    const fin = this.nudgeToRunnable(tutorialCore, 0, 10);
     const course: Checkpoint[] = [
-      { id: 1, code: '31', x: 20, z: 20, description: 'Boulder, North side' },
-      { id: 2, code: 'F', x: 0, z: 10, description: 'Finish banner' }
+      { id: 1, code: '31', x: cp1.x, z: cp1.z, description: 'Boulder, North side' },
+      { id: 2, code: 'F', x: fin.x, z: fin.z, description: 'Finish banner' }
     ];
+    this.tutorialCourse = course;
 
     // Load elements
     document.getElementById('lobby-screen')?.classList.add('hidden');
@@ -995,7 +1091,7 @@ class WebteeringApp {
         btnNext.classList.add('hidden');
         break;
       case 4:
-        textEl.innerHTML = `Perfectly aligned! Your map now matches the forest direction.<br><br>Find <b>Checkpoint 1 [Code 31]</b> marked as a red ring on your map, hidden behind a boulder (coordinates X:20, Z:20). Stand close and press <b>E</b> to punch!`;
+        textEl.innerHTML = `Perfectly aligned! Your map now matches the forest direction.<br><br>Find <b>Checkpoint 1 [Code 31]</b> marked as a red ring on your map, hidden behind a boulder (coordinates X:${this.tutorialCourse[0]?.x ?? 20}, Z:${this.tutorialCourse[0]?.z ?? 20}). Stand close and press <b>E</b> to punch!`;
         btnNext.classList.add('hidden');
         break;
       case 5:
@@ -1075,23 +1171,18 @@ class WebteeringApp {
 
     this.rogainePunchedCps = [];
     this.rogainePoints = 0;
+    this.rogaineEnded = false;
     this.relaxedStartTime = Date.now(); // Store start time for splits and Rogaine time limits
 
     // Load random freeplay seed (seed = random)
     const seed = Math.floor(Math.random() * 1000000);
-    
-    // Matured freeplay course matching the 5-point checkpoints + 1 Finish checkpoint
-    const course = [
-      { id: 1, code: '31', x: 40, z: -30, description: 'Boulder, West side' },
-      { id: 2, code: '32', x: -80, z: 70, description: 'Gully, upper part' },
-      { id: 3, code: '33', x: 60, z: 80, description: 'Spur, foot of slope' },
-      { id: 4, code: '34', x: -100, z: -80, description: 'Thicket, South edge' },
-      { id: 5, code: '35', x: 20, z: -100, description: 'Hill, top' },
-      { id: 6, code: 'F', x: 0, z: 10, description: 'Finish banner' }
-    ];
 
     const selBiomeLobby = document.getElementById('sel-biome') as HTMLSelectElement;
     if (selBiomeLobby) this.activeBiome = selBiomeLobby.value;
+
+    // Terrain-aware course: flags on runnable ground with proper leg structure
+    // (was a fixed list of coordinates that ignored the random seed entirely)
+    const course = this.buildSmartCourse(seed, this.activeBiome);
 
     const selGameMode = document.getElementById('sel-game-mode-lobby') as HTMLSelectElement;
     this.isRogaine = selGameMode ? (selGameMode.value === 'rogaine') : false;
@@ -1286,14 +1377,19 @@ class WebteeringApp {
     // 1. Generate random seed
     const seed = Math.floor(Math.random() * 1000000);
     
-    // 2. Hide a target flag 50m to 80m away at a random angle
+    // 2. Hide a target flag 50m to 80m away at a random angle, nudged onto
+    // runnable ground (no hidden flags in lakes or up cliff walls)
     const angle = Math.random() * Math.PI * 2;
     const dist = 50.0 + Math.random() * 30.0;
-    const targetX = Math.round(Math.cos(angle) * dist);
-    const targetZ = Math.round(Math.sin(angle) * dist);
+    const relaxedCore = new TerrainCore(seed, 'alpine');
+    const target = this.nudgeToRunnable(
+      relaxedCore,
+      Math.round(Math.cos(angle) * dist),
+      Math.round(Math.sin(angle) * dist)
+    );
 
     const course: Checkpoint[] = [
-      { id: 1, code: '99', x: targetX, z: targetZ, description: 'Hidden Search Feature' }
+      { id: 1, code: '99', x: target.x, z: target.z, description: 'Hidden Search Feature' }
     ];
 
     // 3. Clear lobby & load wilderness
@@ -1461,8 +1557,8 @@ class WebteeringApp {
     // Sync Headlamp rotation/direction to Camera in night sandbox
     if (this.headlamp) {
       this.headlamp.position.copy(this.engine.camera.position);
-      const lookDir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.engine.camera.quaternion);
-      this.headlamp.target.position.copy(this.engine.camera.position).add(lookDir);
+      this.scratchLookDir.set(0, 0, -1).applyQuaternion(this.engine.camera.quaternion);
+      this.headlamp.target.position.copy(this.engine.camera.position).add(this.scratchLookDir);
       this.headlamp.target.updateMatrixWorld();
     }
 
@@ -1547,9 +1643,10 @@ class WebteeringApp {
           this.handheldBezelRing.rotation.y = this.hud.bezelAngle;
         }
 
-        // Flag dynamic canvas texture upload to GPU
-        if (this.handheldMapTexture) {
+        // Upload the map canvas to the GPU only when it actually repainted
+        if (this.handheldMapTexture && this.hud.mapDrawStamp !== this.lastHandheldMapStamp) {
           this.handheldMapTexture.needsUpdate = true;
+          this.lastHandheldMapStamp = this.hud.mapDrawStamp;
         }
       }
     }
@@ -1674,12 +1771,19 @@ class WebteeringApp {
           
           if (remaining <= 0) {
             timerFill.style.background = '#ff3333'; // warning red
-            
+
             const exceeded = elapsedSecs - 120;
             const penalty = Math.ceil(exceeded / 10) * 10;
             const scoreVal = document.getElementById('score-val');
             if (scoreVal) {
               scoreVal.innerHTML = `${Math.max(0, this.rogainePoints - penalty)} <span style="color: #ff3333; font-size: 0.75rem;">(Penalty -${penalty})</span>`;
+            }
+
+            // Hard stop: 30s grace past the limit, then the run actually ends
+            // (the timer previously displayed penalties forever without ending)
+            if (elapsedSecs > 150 && !this.rogaineEnded) {
+              Sound.playError();
+              this.finishRogaineRun();
             }
           } else {
             timerFill.style.background = '#ffaa00';
@@ -1701,10 +1805,7 @@ class WebteeringApp {
     let punchedCps: number[] = [];
 
     if (this.isTutorial) {
-      activeCourse = [
-        { id: 1, code: '31', x: 20, z: 20, description: 'Boulder, North side' },
-        { id: 2, code: 'F', x: 0, z: 10, description: 'Finish banner' }
-      ];
+      activeCourse = this.tutorialCourse;
       // Mock punched list inside tutorial
       punchedCps = Array.from({ length: this.tutorialStep - 4 }, (_, i) => i);
     } else if (this.isFreeplay) {
@@ -1799,6 +1900,7 @@ class WebteeringApp {
         if (this.keysPressed['KeyE']) {
           this.keysPressed['KeyE'] = false;
           Sound.playError(); // play error buzzer
+          this.hud.flashPromptError(); // visible rejection: shake the prompt
         }
       } else {
         this.hud.hideActionPrompt();
@@ -1811,23 +1913,18 @@ class WebteeringApp {
       // Step progress inside tutorial
       if (this.tutorialStep === 4 && index === 0) {
         this.tutorialStep = 5;
-        this.hud.updateECard([
-          { id: 1, code: '31', x: 20, z: 20, description: 'Boulder, North side' },
-          { id: 2, code: 'F', x: 0, z: 10, description: 'Finish banner' }
-        ], [0]);
+        this.hud.updateECard(this.tutorialCourse, [0]);
         this.hud.triggerPunchAlert('31', 'Boulder, North side', 45000);
         this.updateTutorialProgress();
       } else if (this.tutorialStep === 5 && index === 1) {
         this.tutorialStep = 6;
-        this.hud.updateECard([
-          { id: 1, code: '31', x: 20, z: 20, description: 'Boulder, North side' },
-          { id: 2, code: 'F', x: 0, z: 10, description: 'Finish banner' }
-        ], [0, 1]);
+        this.hud.updateECard(this.tutorialCourse, [0, 1]);
         this.hud.triggerPunchAlert('F', 'Finish banner', 90000);
         this.updateTutorialProgress();
       }
     } else if (this.isFreeplay) {
       if (this.isRogaine) {
+        if (this.rogaineEnded) return; // run is over: no more scoring
         if (this.rogainePunchedCps.includes(index)) return;
         this.rogainePunchedCps.push(index);
         this.hud.updateECard(this.activeCourse, this.rogainePunchedCps);
@@ -1836,56 +1933,8 @@ class WebteeringApp {
         if (cp.code === 'F') {
           // Finish banner!
           Sound.playPunch();
-          
-          // Calculate time overrun penalty: limit is 120 seconds
-          const elapsedSecs = (Date.now() - this.relaxedStartTime) / 1000;
-          if (elapsedSecs > 120) {
-            const exceeded = elapsedSecs - 120;
-            const penalty = Math.ceil(exceeded / 10) * 10;
-            this.rogainePoints = Math.max(0, this.rogainePoints - penalty);
-            const scoreVal = document.getElementById('score-val');
-            if (scoreVal) scoreVal.innerText = `${this.rogainePoints} (Penalty -${penalty})`;
-          }
-          
           this.hud.triggerPunchAlert('F', 'Finish banner', Date.now() - this.relaxedStartTime);
-          this.controls.unlock();
-          
-          // Generate a fake multiplayer scoreboard entry to show on podium screen
-          this.roomState = {
-            id: 'freeplay',
-            name: 'Sandbox Rogaine',
-            players: {
-              local: {
-                id: 'local',
-                name: 'Runner (You)',
-                x: this.controls.position.x,
-                y: this.controls.position.y,
-                z: this.controls.position.z,
-                rx: 0,
-                ry: 0,
-                anim: 'idle',
-                skinColor: '#ffaa00',
-                punchedCheckpoints: this.rogainePunchedCps
-              }
-            },
-            status: 'finished',
-            mapSeed: 123,
-            startTime: this.relaxedStartTime,
-            course: this.activeCourse,
-            scoreboard: {
-              local: {
-                id: 'local',
-                name: 'Runner (You)',
-                finished: true,
-                elapsed: Date.now() - this.relaxedStartTime,
-                splits: this.rogainePunchedCps.map(() => Date.now() - this.relaxedStartTime) // mock splits
-              }
-            }
-          };
-
-          setTimeout(() => {
-            this.showScoreboardSummary();
-          }, 1200);
+          this.finishRogaineRun();
         } else {
           // Punching a regular control checkpoint flag!
           Sound.playPunch();
@@ -1916,6 +1965,63 @@ class WebteeringApp {
       // Send WebSocket stamp claim to server
       this.network.punchCheckpoint(index);
     }
+  }
+
+  // Ends a rogaine run: applies the time-overrun penalty, locks further
+  // punching, and shows the podium. Reached by punching Finish OR by the
+  // hard timeout (120s limit + 30s grace) in the update loop.
+  private finishRogaineRun() {
+    if (this.rogaineEnded) return;
+    this.rogaineEnded = true;
+
+    // Calculate time overrun penalty: limit is 120 seconds
+    const elapsedSecs = (Date.now() - this.relaxedStartTime) / 1000;
+    if (elapsedSecs > 120) {
+      const exceeded = elapsedSecs - 120;
+      const penalty = Math.ceil(exceeded / 10) * 10;
+      this.rogainePoints = Math.max(0, this.rogainePoints - penalty);
+      const scoreVal = document.getElementById('score-val');
+      if (scoreVal) scoreVal.innerText = `${this.rogainePoints} (Penalty -${penalty})`;
+    }
+
+    this.controls.unlock();
+
+    // Generate a fake multiplayer scoreboard entry to show on podium screen
+    this.roomState = {
+      id: 'freeplay',
+      name: 'Sandbox Rogaine',
+      players: {
+        local: {
+          id: 'local',
+          name: 'Runner (You)',
+          x: this.controls.position.x,
+          y: this.controls.position.y,
+          z: this.controls.position.z,
+          rx: 0,
+          ry: 0,
+          anim: 'idle',
+          skinColor: '#ffaa00',
+          punchedCheckpoints: this.rogainePunchedCps
+        }
+      },
+      status: 'finished',
+      mapSeed: 123,
+      startTime: this.relaxedStartTime,
+      course: this.activeCourse,
+      scoreboard: {
+        local: {
+          id: 'local',
+          name: 'Runner (You)',
+          finished: true,
+          elapsed: Date.now() - this.relaxedStartTime,
+          splits: this.rogainePunchedCps.map(() => Date.now() - this.relaxedStartTime) // mock splits
+        }
+      }
+    };
+
+    setTimeout(() => {
+      this.showScoreboardSummary();
+    }, 1200);
   }
 
   // Keyboard raw click buffer for one-shot punch action

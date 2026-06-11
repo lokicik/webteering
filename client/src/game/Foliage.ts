@@ -522,9 +522,10 @@ export class Foliage {
             this.buildQueue.push({ cx, cz });
           }
         } else if (existing.lodNear !== lodNear) {
-          // LOD ring changed: rebuild this chunk with the other tree representation
+          // LOD ring changed: swap representations in the same frame (queueing
+          // left the chunk treeless for a few frames -> visible pop gap)
           this.removeChunk(key);
-          this.buildQueue.push({ cx, cz });
+          this.buildChunk(cx, cz);
         }
       }
     }
@@ -588,6 +589,31 @@ export class Foliage {
 
     const inBounds = (x: number, z: number) =>
       Math.abs(x) < half - 4 && Math.abs(z) < half - 4;
+
+    // Coarse 9x9 height grid sampled once per chunk; grass/flower placement
+    // bilinearly interpolates it instead of hitting the noise field thousands
+    // of times (grass alone was ~3600 height samples per chunk build)
+    const gridN = 9;
+    const gridStep = this.chunkSize / (gridN - 1);
+    const gridHeights = new Float32Array(gridN * gridN);
+    for (let gz = 0; gz < gridN; gz++) {
+      for (let gx = 0; gx < gridN; gx++) {
+        gridHeights[gz * gridN + gx] = terrain.getTerrainHeight(x0 + gx * gridStep, z0 + gz * gridStep);
+      }
+    }
+    const sampleGridHeight = (x: number, z: number): number => {
+      const fx = Math.min(Math.max((x - x0) / gridStep, 0), gridN - 1.001);
+      const fz = Math.min(Math.max((z - z0) / gridStep, 0), gridN - 1.001);
+      const ix = Math.floor(fx);
+      const iz = Math.floor(fz);
+      const tx = fx - ix;
+      const tz = fz - iz;
+      const h00 = gridHeights[iz * gridN + ix];
+      const h10 = gridHeights[iz * gridN + ix + 1];
+      const h01 = gridHeights[(iz + 1) * gridN + ix];
+      const h11 = gridHeights[(iz + 1) * gridN + ix + 1];
+      return h00 + (h10 - h00) * tx + (h01 - h00) * tz + (h00 - h10 - h01 + h11) * tx * tz;
+    };
 
     // 1. TREES (trunks + card foliage near / cone foliage far)
     if (d.trees > 0) {
@@ -673,7 +699,7 @@ export class Foliage {
 
         const type = terrain.getTerrainType(x, z);
         if (type !== 'field' && type !== 'forest' && type !== 'walk') continue;
-        const y = terrain.getTerrainHeight(x, z);
+        const y = sampleGridHeight(x, z);
         if (y <= 4.1) continue;
 
         // Snowline: sparse, frosted tufts instead of lush green on snow
@@ -710,7 +736,7 @@ export class Foliage {
         if (!inBounds(x, z)) continue;
 
         if (terrain.getTerrainType(x, z) !== 'field') continue;
-        const y = terrain.getTerrainHeight(x, z);
+        const y = sampleGridHeight(x, z);
         if (y <= 4.1 || y >= 10) continue; // no daisies on the snowline
 
         dummy.position.set(x, y, z);

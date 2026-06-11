@@ -45,12 +45,36 @@ export class HUD {
   private bezelEl = document.getElementById('compass-bezel') as HTMLElement;
   private wasAligned = false;
 
+  // Logical (CSS-pixel) sizes of the HiDPI-scaled canvases
+  private stripW = 360;
+  private stripH = 36;
+  private miniW = 140;
+  private miniH = 140;
+
   constructor() {
     this.mapCtx = this.mapCanvas.getContext('2d')!;
     this.offscreenMapCanvas = document.createElement('canvas');
-    
+
     this.compassStripCtx = this.compassStripCanvas?.getContext('2d') || null;
     this.minimapCtx = this.minimapCanvas?.getContext('2d') || null;
+
+    // HiDPI: render the strip + minimap at devicePixelRatio so they're sharp
+    // on retina displays (both canvases are CSS-sized at width:100%)
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    if (this.compassStripCanvas && this.compassStripCtx) {
+      this.stripW = this.compassStripCanvas.width;
+      this.stripH = this.compassStripCanvas.height;
+      this.compassStripCanvas.width = Math.round(this.stripW * dpr);
+      this.compassStripCanvas.height = Math.round(this.stripH * dpr);
+      this.compassStripCtx.scale(dpr, dpr);
+    }
+    if (this.minimapCanvas && this.minimapCtx) {
+      this.miniW = this.minimapCanvas.width;
+      this.miniH = this.minimapCanvas.height;
+      this.minimapCanvas.width = Math.round(this.miniW * dpr);
+      this.minimapCanvas.height = Math.round(this.miniH * dpr);
+      this.minimapCtx.scale(dpr, dpr);
+    }
     
     // Inject the Silva orienting arrow div inside the bezel housing
     if (this.bezelEl) {
@@ -354,14 +378,10 @@ export class HUD {
     if (this.mapCanvas.width !== size || this.mapCanvas.height !== size) {
       this.mapCanvas.width = size;
       this.mapCanvas.height = size;
+      this.mapDirty = true;
     }
-    
-    // Draw cached static background map
-    this.mapCtx.drawImage(this.offscreenMapCanvas, 0, 0);
 
-    const half = size / 2;
-
-    // Apply CSS 2D Rotation matching Map Modes
+    // Rotation is a cheap CSS transform — keep it per-frame for smoothness
     const degrees = (cameraYaw * 180) / Math.PI;
     if (this.mapMode === 'north') {
       this.mapCanvas.style.transform = 'none';
@@ -372,6 +392,23 @@ export class HUD {
       const manDegrees = (this.manualMapAngle * 180) / Math.PI;
       this.mapCanvas.style.transform = `rotate(${manDegrees}deg)`;
     }
+
+    // The canvas repaint (background composite + runner dots + GPS marker)
+    // only needs ~10Hz; the GPS arrow moves a few pixels per second at most
+    const now = performance.now();
+    const playerCount = Object.keys(otherPlayers).length;
+    if (!this.mapDirty && playerCount === this.lastMapPlayers && now - this.lastMapDraw < 100) {
+      return;
+    }
+    this.mapDirty = false;
+    this.lastMapDraw = now;
+    this.lastMapPlayers = playerCount;
+    this.mapDrawStamp++; // consumers (handheld 3D map texture) re-upload only on repaint
+
+    // Draw cached static background map
+    this.mapCtx.drawImage(this.offscreenMapCanvas, 0, 0);
+
+    const half = size / 2;
 
     // Draw other runners on map (faint colored dots)
     for (const pid in otherPlayers) {
@@ -470,10 +507,9 @@ export class HUD {
     }
   }
 
-  // Update leaderboard rows
+  // Update leaderboard rows. Rows are created once and patched in place —
+  // rebuilding via innerHTML every frame caused needless DOM churn while racing.
   public updateLeaderboard(scoreboard: { [id: string]: any }, localPlayerId: string | null) {
-    this.leaderboardPanel.innerHTML = '';
-    
     // Sort scoreboard entries (1. Finished runners sorted by time, 2. Active runners sorted by CPs count, 3. alphabetically)
     const sorted = Object.values(scoreboard).sort((a, b) => {
       if (a.finished && b.finished) return a.elapsed - b.elapsed;
@@ -487,21 +523,47 @@ export class HUD {
       return a.name.localeCompare(b.name);
     });
 
-    sorted.forEach((entry, idx) => {
+    // Reconcile row count
+    while (this.leaderboardPanel.children.length < sorted.length) {
       const row = document.createElement('div');
+      row.innerHTML = '<span class="leader-rank"></span><span class="leader-name"></span><span class="leader-time"></span>';
+      this.leaderboardPanel.appendChild(row);
+    }
+    while (this.leaderboardPanel.children.length > sorted.length) {
+      this.leaderboardPanel.removeChild(this.leaderboardPanel.lastChild!);
+    }
+
+    sorted.forEach((entry, idx) => {
+      const row = this.leaderboardPanel.children[idx] as HTMLElement;
       const isMe = (entry.id === localPlayerId);
-      row.className = `leader-row ${entry.finished ? 'finished' : ''}`;
-      if (isMe) row.style.borderColor = '#00ccff';
+
+      const className = `leader-row ${entry.finished ? 'finished' : ''}`;
+      if (row.className !== className) row.className = className;
+      row.style.borderColor = isMe ? '#00ccff' : '';
 
       const timeStr = entry.finished ? this.formatTime(entry.elapsed) : `CP ${entry.splits.length}`;
+      const spans = row.children;
+      const rank = spans[0] as HTMLElement;
+      const name = spans[1] as HTMLElement;
+      const time = spans[2] as HTMLElement;
 
-      row.innerHTML = `
-        <span class="leader-rank" style="color: ${idx===0 ? '#ffdd00' : 'inherit'}">#${idx + 1}</span>
-        <span class="leader-name" style="${isMe ? 'color:#00ccff; font-weight:bold;' : ''}">${entry.name}</span>
-        <span class="leader-time">${timeStr}</span>
-      `;
-      this.leaderboardPanel.appendChild(row);
+      const rankText = `#${idx + 1}`;
+      if (rank.textContent !== rankText) rank.textContent = rankText;
+      rank.style.color = idx === 0 ? '#ffdd00' : '';
+
+      if (name.textContent !== entry.name) name.textContent = entry.name;
+      name.style.color = isMe ? '#00ccff' : '';
+      name.style.fontWeight = isMe ? 'bold' : '';
+
+      if (time.textContent !== timeStr) time.textContent = timeStr;
     });
+  }
+
+  // Visible punch rejection: one-shot shake on the action prompt
+  public flashPromptError() {
+    this.actionPrompt.classList.remove('prompt-error-shake');
+    void (this.actionPrompt as HTMLElement).offsetWidth; // restart the animation
+    this.actionPrompt.classList.add('prompt-error-shake');
   }
 
   // Proximity prompts triggering when near checkpoint flag
@@ -523,6 +585,7 @@ export class HUD {
   private alertTimeout: any = null;
   // Dynamic slide-down punch alert banner
   public triggerPunchAlert(code: string, description: string, elapsed: number) {
+    this.mapDirty = true; // punch state changed -> force the next map repaint
     if (this.alertTimeout) clearTimeout(this.alertTimeout);
 
     const codeEl = document.getElementById('alert-cp-code') as HTMLElement;
@@ -620,12 +683,28 @@ export class HUD {
     }
   }
 
+  // Redraw throttle state (these canvases were fully repainted every frame)
+  private lastStripYaw = Infinity;
+  private lastMinimapYaw = Infinity;
+  private lastMinimapX = Infinity;
+  private lastMinimapZ = Infinity;
+  private lastMinimapDraw = 0;
+  private lastMinimapPunches = -1;
+  private lastMapDraw = 0;
+  private lastMapPlayers = -1;
+  public mapDirty = true; // set by callers when punches/course change
+  public mapDrawStamp = 0; // increments on every actual map canvas repaint
+
   public drawCompassStrip(cameraYaw: number) {
     if (!this.compassStripCanvas || !this.compassStripCtx) return;
 
+    // Heading unchanged (< ~0.25 deg) -> the strip is already correct
+    if (Math.abs(cameraYaw - this.lastStripYaw) < 0.004) return;
+    this.lastStripYaw = cameraYaw;
+
     const ctx = this.compassStripCtx;
-    const width = this.compassStripCanvas.width;
-    const height = this.compassStripCanvas.height;
+    const width = this.stripW;
+    const height = this.stripH;
 
     // Clear background
     ctx.clearRect(0, 0, width, height);
@@ -714,9 +793,27 @@ export class HUD {
   ) {
     if (!this.minimapCanvas || !this.minimapCtx) return;
 
+    // Skip the repaint while nothing visible changed: small heading deltas keep
+    // rotation smooth when turning, the time floor catches pulse animation,
+    // and punch-count changes force a redraw
+    const now = performance.now();
+    const moved =
+      Math.abs(playerX - this.lastMinimapX) > 1.0 ||
+      Math.abs(playerZ - this.lastMinimapZ) > 1.0;
+    const turned = Math.abs(cameraYaw - this.lastMinimapYaw) > 0.02;
+    const punchesChanged = punchedCps.length !== this.lastMinimapPunches;
+    if (!moved && !turned && !punchesChanged && now - this.lastMinimapDraw < 150) {
+      return;
+    }
+    this.lastMinimapX = playerX;
+    this.lastMinimapZ = playerZ;
+    this.lastMinimapYaw = cameraYaw;
+    this.lastMinimapDraw = now;
+    this.lastMinimapPunches = punchedCps.length;
+
     const ctx = this.minimapCtx;
-    const width = this.minimapCanvas.width;
-    const height = this.minimapCanvas.height;
+    const width = this.miniW;
+    const height = this.miniH;
 
     // Clear background
     ctx.clearRect(0, 0, width, height);

@@ -1,23 +1,20 @@
 import { RoomState, PlayerState, Checkpoint, ScoreboardEntry } from './sharedTypes';
-
-// Simple deterministic PRNG for generating matching courses
-function lcg(seed: number) {
-  let s = seed;
-  return function() {
-    s = (s * 1664525 + 1013904223) % 4294967296;
-    return s / 4294967296;
-  };
-}
+import { TerrainCore, generateSmartCourse, lcg } from './TerrainCore';
 
 export class RoomManager {
   private rooms: { [id: string]: RoomState } = {};
   private playerToRoom: { [playerId: string]: string } = {};
+  // Time of the last accepted position update per player (anti-cheat dt basis)
+  private lastPosUpdate: { [playerId: string]: number } = {};
 
-  // Generate a course deterministically from a seed
-  public generateCourse(seed: number): Checkpoint[] {
+  // Generate a terrain-aware course deterministically from a seed. The same
+  // TerrainCore math runs on every client, so flags land on runnable ground
+  // (never water/cliff/snowline) with proper 60-140m legs and bearing changes.
+  public generateCourse(seed: number, biome: string = 'alpine'): Checkpoint[] {
+    const core = new TerrainCore(seed, biome);
+    const points = generateSmartCourse(core, seed, 5);
+
     const random = lcg(seed);
-    const numControls = 5;
-    const course: Checkpoint[] = [];
     const descriptions = [
       'Boulder, North-East side',
       'Depression, shallow part',
@@ -28,26 +25,17 @@ export class RoomManager {
       'Hill, top'
     ];
 
-    for (let i = 1; i <= numControls; i++) {
-      // Place checkpoint in a random ring to distribute them nicely
-      const angle = random() * Math.PI * 2;
-      const radius = 50 + (i * 40) + (random() * 20); // progressive rings from start
-      const x = Math.round(Math.cos(angle) * radius);
-      const z = Math.round(Math.sin(angle) * radius);
-      const descIndex = Math.floor(random() * descriptions.length);
-
-      course.push({
-        id: i,
-        code: (30 + i).toString(),
-        x,
-        z,
-        description: descriptions[descIndex]
-      });
-    }
+    const course: Checkpoint[] = points.map((p, idx) => ({
+      id: idx + 1,
+      code: (31 + idx).toString(),
+      x: p.x,
+      z: p.z,
+      description: descriptions[Math.floor(random() * descriptions.length)]
+    }));
 
     // Add Finish checkpoint close to start
     course.push({
-      id: numControls + 1,
+      id: points.length + 1,
       code: 'F',
       x: 0,
       z: 10,
@@ -89,9 +77,15 @@ export class RoomManager {
     return room;
   }
 
-  public joinRoom(roomId: string, playerId: string, name: string, skinColor: string): RoomState | null {
+  public joinRoom(roomId: string, playerId: string, name: string, skinColor: string): RoomState | null | 'in-progress' {
     const room = this.rooms[roomId];
     if (!room) return null;
+
+    // Races can't be joined mid-run: late joiners would have no synced start
+    // time, no countdown, and an undefined scoreboard state
+    if (room.status !== 'lobby') {
+      return 'in-progress';
+    }
 
     // Create player state
     const player: PlayerState = {
@@ -131,6 +125,7 @@ export class RoomManager {
       delete room.players[playerId];
       delete room.scoreboard[playerId];
       delete this.playerToRoom[playerId];
+      delete this.lastPosUpdate[playerId];
 
       // If room is empty, delete it
       if (Object.keys(room.players).length === 0) {
@@ -163,24 +158,31 @@ export class RoomManager {
 
     const player = room.players[playerId];
     if (player) {
-      // Basic server anti-cheat speed threshold (e.g. teleporting validation)
-      // Max running speed: ~10 units/sec, tick rate: 20Hz -> max ~0.5 units per tick.
-      // We will enforce speed limit in the physical client update, and a broad ceiling on server.
-      const maxDistancePerTick = 10; // High buffer to allow latency recovery, but stops massive teleports
+      // Time-based anti-cheat: allow at most the fastest legitimate movement
+      // (downhill slide ~16.5 m/s) plus headroom over the REAL elapsed time
+      // since the last accepted update, so lag spikes don't rubber-band honest
+      // players but a 10m teleport between updates gets rejected.
+      const now = Date.now();
+      const last = this.lastPosUpdate[playerId] ?? now;
+      const dtSec = Math.min((now - last) / 1000, 1.0); // cap credit at 1s
+      const maxDist = 18 * dtSec + 0.6;
+
       const dx = x - player.x;
       const dz = z - player.z;
       const dist = Math.sqrt(dx * dx + dz * dz);
 
-      if (dist < maxDistancePerTick || player.x === 0 && player.z === 0) {
+      const isSpawn = player.x === 0 && player.z === 0;
+      if (dist <= maxDist || isSpawn) {
         player.x = x;
         player.y = y;
         player.z = z;
+        this.lastPosUpdate[playerId] = now;
       }
-      
+
       player.rx = rx;
       player.ry = ry;
       player.anim = anim;
-      
+
       return room;
     }
     return null;
@@ -255,6 +257,7 @@ export class RoomManager {
       room.players[pid].x = 0;
       room.players[pid].y = 0;
       room.players[pid].z = 0;
+      delete this.lastPosUpdate[pid]; // fresh anti-cheat baseline at the start line
       
       room.scoreboard[pid] = {
         id: pid,

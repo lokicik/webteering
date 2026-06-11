@@ -60,6 +60,7 @@ export class Controls {
   public vaultTimer = 0.0;
   private vaultSpeedBoost = 1.0;
   public isSliding = false;
+  private slideCooldown = 0; // brief lockout after a slide ends (no chatter on bumpy slopes)
   private slideScrapeCooldown = 0.0;
 
   constructor(camera: THREE.PerspectiveCamera, domElement: HTMLElement, terrain: CollidableTerrain) {
@@ -245,11 +246,11 @@ export class Controls {
 
     if (isSprinting) {
       // Sprinting stamina drain (much more balanced, takes ~33-40s on flat ground)
-      let drainRate = 2.5; 
+      let drainRate = 2.5;
       if (currentTerrainType === 'forest') drainRate = 3.2;
       else if (currentTerrainType === 'walk') drainRate = 4.2;
       else if (currentTerrainType === 'thicket') drainRate = 6.0;
-      else if (currentTerrainType === 'water') drainRate = 5.0;
+      else if (currentTerrainType === 'water') drainRate = 5.5; // swimming shortcuts cost real energy
       
       this.stamina = Math.max(0.0, this.stamina - drainRate * delta);
     } else {
@@ -261,8 +262,8 @@ export class Controls {
     // Exhaustion state locks
     if (this.stamina <= 0.0) {
       this.isExhausted = true;
-    } else if (this.isExhausted && this.stamina >= 35.0) {
-      this.isExhausted = false; // must recover to 35% to clear fatigue
+    } else if (this.isExhausted && this.stamina >= 30.0) {
+      this.isExhausted = false; // must recover to 30% to clear fatigue
     }
 
     // --- 1.5. APPLY SPEED MODIFIERS AND NON-PUNISHING CLAMPED CAPS ---
@@ -377,8 +378,16 @@ export class Controls {
           const checkZ = this.position.z + forward.z * 1.4;
           const forwardHeight = this.terrain.getTerrainHeight(checkX, checkZ);
           const fHeightDiff = forwardHeight - this.position.y;
-          
-          if (fHeightDiff >= 0.45 && fHeightDiff <= 1.25) {
+
+          // Dual probe: a vaultable WALL is already high at 0.7m out, while a
+          // steep ramp is only ~half-height there — ramps get a jump, not a vault
+          const nearHeight = this.terrain.getTerrainHeight(
+            this.position.x + forward.x * 0.7,
+            this.position.z + forward.z * 0.7
+          );
+          const nearDiff = nearHeight - this.position.y;
+
+          if (fHeightDiff >= 0.45 && fHeightDiff <= 1.25 && nearDiff >= 0.35) {
             // Trigger physical hurdle vault!
             this.isVaulting = true;
             this.vaultTimer = 0.45;
@@ -479,6 +488,7 @@ export class Controls {
           if (heightDiff >= -0.6) {
             this.isSliding = false;
             this.slipTimer = 0.45; // brief landing recovery slowdown
+            this.slideCooldown = 0.3; // no immediate re-trigger on bumpy slopes
           } else {
             // Apply downhill sliding force: override velocity
             const slideSpeed = 16.5;
@@ -493,7 +503,9 @@ export class Controls {
             }
           }
         } else if (this.slipTimer <= 0.0) {
-          if (heightDiff < -1.1 && isMoving && !this.keys.ShiftLeft) {
+          if (this.slideCooldown > 0) {
+            this.slideCooldown -= delta;
+          } else if (heightDiff < -1.1 && isMoving && !this.keys.ShiftLeft) {
             // Enter Sliding state!
             this.isSliding = true;
             this.slideScrapeCooldown = 0.0;

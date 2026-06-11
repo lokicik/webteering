@@ -14,6 +14,7 @@ export class Network {
   public onPlayerPunched: ((data: { playerId: string; checkpointIndex: number; isFinish: boolean; roomState: RoomState }) => void) | null = null;
   public onRoomsList: ((rooms: any[]) => void) | null = null;
   public onChatMessage: ((data: { sender: string; msg: string; color: string }) => void) | null = null;
+  public onJoinRejected: ((data: { roomId: string; reason: string }) => void) | null = null;
 
 
   constructor() {
@@ -62,6 +63,10 @@ export class Network {
 
     this.socket.on('chat-message', (data: { sender: string; msg: string; color: string }) => {
       if (this.onChatMessage) this.onChatMessage(data);
+    });
+
+    this.socket.on('join-rejected', (data: { roomId: string; reason: string }) => {
+      if (this.onJoinRejected) this.onJoinRejected(data);
     });
   }
 

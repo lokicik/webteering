@@ -1,61 +1,11 @@
 import * as THREE from 'three';
 import { createDetailAlbedo } from './textures/ProceduralTextures';
 import { VoxelType } from '../sharedTypes';
-
-// Simple deterministic PRNG
-function lcg(seed: number) {
-  let s = seed;
-  return function() {
-    s = (s * 1664525 + 1013904223) % 4294967296;
-    return s / 4294967296;
-  };
-}
-
-// Self-contained 2D Perlin Noise Generator
-class Noise2D {
-  private perm: number[] = [];
-  constructor(seed: number) {
-    const random = lcg(seed);
-    const p = Array.from({ length: 256 }, (_, i) => i);
-    for (let i = 255; i > 0; i--) {
-      const j = Math.floor(random() * (i + 1));
-      const temp = p[i];
-      p[i] = p[j];
-      p[j] = temp;
-    }
-    this.perm = [...p, ...p];
-  }
-
-  private fade(t: number) { return t * t * t * (t * (t * 6 - 15) + 10); }
-  private lerp(t: number, a: number, b: number) { return a + t * (b - a); }
-  private grad(hash: number, x: number, y: number) {
-    const h = hash & 7;
-    const u = h < 4 ? x : y;
-    const v = h < 4 ? y : x;
-    return ((h & 1) ? -u : u) + ((h & 2) ? -2.0 * v : 2.0 * v);
-  }
-
-  public noise(x: number, y: number): number {
-    const X = Math.floor(x) & 255;
-    const Y = Math.floor(y) & 255;
-    const xf = x - Math.floor(x);
-    const yf = y - Math.floor(y);
-    const u = this.fade(xf);
-    const v = this.fade(yf);
-
-    const aa = this.perm[this.perm[X] + Y];
-    const ab = this.perm[this.perm[X] + Y + 1];
-    const ba = this.perm[this.perm[X + 1] + Y];
-    const bb = this.perm[this.perm[X + 1] + Y + 1];
-
-    const x1 = this.lerp(u, this.grad(aa, xf, yf), this.grad(ba, xf - 1, yf));
-    const x2 = this.lerp(u, this.grad(ab, xf, yf - 1), this.grad(bb, xf - 1, yf - 1));
-    return (this.lerp(v, x1, x2) + 1) / 2;
-  }
-}
+import { TerrainCore, Noise2D } from './TerrainCore';
 
 export class Terrain {
   private scene: THREE.Scene;
+  private core: TerrainCore; // pure height/type math shared with the server
   private noiseGen: Noise2D;
   
   // Map dimensions
@@ -65,6 +15,8 @@ export class Terrain {
   // Height and type caches (for custom imported DEM maps)
   private heightMap: { [key: string]: number } = {};
   private typeMap: { [key: string]: VoxelType } = {};
+  // Bounded cache for procedural type lookups (cleared wholesale when full)
+  private typeCache = new Map<string, VoxelType>();
   
   private biome = 'alpine';
 
@@ -170,6 +122,10 @@ export class Terrain {
   private materials: { [key: string]: THREE.Material } = {};
   private chunkGroup = new THREE.Group();
   private waterMesh: THREE.Mesh | null = null;
+  // Coarse far-distance ring so hilltop views show rolling ridges, not void
+  private farRingMesh: THREE.Mesh | null = null;
+  private farRingChunkX: number | null = null;
+  private farRingChunkZ: number | null = null;
 
   // Infinite chunk loading properties
   private activeChunks: { [key: string]: THREE.Mesh } = {};
@@ -179,7 +135,8 @@ export class Terrain {
 
   constructor(scene: THREE.Scene, seed: number, biome: string = 'alpine') {
     this.scene = scene;
-    this.noiseGen = new Noise2D(seed);
+    this.core = new TerrainCore(seed, biome, this.mapSize, this.waterLevel);
+    this.noiseGen = this.core.noiseGen;
     this.biome = biome;
 
     this.initMaterials();
@@ -256,37 +213,58 @@ export class Terrain {
     });
 
     this.materials['water'].onBeforeCompile = (shader) => {
+      shader.uniforms.uTime = { value: 0 };
+
       shader.vertexShader = `
         attribute float aDepth;
         varying float vDepth;
+        varying float vWave;
+        varying float vFresnel;
+        uniform float uTime;
       ` + shader.vertexShader;
-      
+
+      // Waves run entirely on the GPU: same 3-frequency formula the CPU loop
+      // used to write into the position attribute every frame (4225 verts)
       shader.vertexShader = shader.vertexShader.replace(
         '#include <begin_vertex>',
         `
           #include <begin_vertex>
           vDepth = aDepth;
+          {
+            vec3 wWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
+            float wave1 = sin(uTime * 1.6 + wWorld.x * 0.06 + wWorld.z * 0.04) * 0.08;
+            float wave2 = cos(uTime * 2.2 - wWorld.x * 0.12 + wWorld.z * 0.10) * 0.04;
+            float wave3 = sin(uTime * 0.8 + wWorld.x * 0.02 - wWorld.z * 0.02) * 0.12;
+            float wave = wave1 + wave2 + wave3;
+            transformed.y += wave;
+            vWave = wave;
+            // Water is flat (+Y normal): grazing-angle factor is just 1 - viewDir.y
+            vec3 viewDir = normalize(cameraPosition - wWorld);
+            vFresnel = pow(1.0 - clamp(viewDir.y, 0.0, 1.0), 3.0);
+          }
         `
       );
 
       shader.fragmentShader = `
         varying float vDepth;
+        varying float vWave;
+        varying float vFresnel;
       ` + shader.fragmentShader;
 
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <color_fragment>',
         `
           #include <color_fragment>
-          
+
           // Style water color dynamically based on depth:
           // Extremely shallow (shorelines) -> blend to white foam
           // Deeper water -> blend to deep, rich blue with higher opacity
-          
+
           float depthFactor = clamp(vDepth / 2.8, 0.0, 1.0); // scales from 0 to 2.8m deep
-          
+
           vec3 shallowColor = vec3(0.8, 0.95, 1.0); // bright shoreline white/teal foam
           vec3 deepColor = diffuseColor.rgb; // base biome water color (e.g. blue)
-          
+
           // Shoreline foam threshold
           if (vDepth < 0.35) {
             float foam = clamp((0.35 - vDepth) / 0.35, 0.0, 1.0);
@@ -296,8 +274,17 @@ export class Terrain {
             diffuseColor.rgb = mix(shallowColor, deepColor, depthFactor);
             diffuseColor.a = mix(0.48, 0.85, depthFactor);
           }
+
+          // Wave crest foam (was per-vertex CPU color writes)
+          float crestFoam = clamp((vWave - 0.03) / 0.15, 0.0, 1.0);
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0), crestFoam * 0.85);
+
+          // Grazing-angle sky brightening for a glassier read at distance
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.72, 0.84, 0.92), vFresnel * 0.35);
         `
       );
+
+      this.materials['water'].userData.shader = shader;
     };
   }
 
@@ -337,132 +324,55 @@ export class Terrain {
   public getTerrainType(x: number, z: number): VoxelType {
     const rx = Math.round(x);
     const rz = Math.round(z);
-    
+
     const key = `${rx},${rz}`;
+    // typeMap holds imported DEM data (authoritative, never evicted)
     if (this.typeMap[key] !== undefined) {
       return this.typeMap[key];
     }
 
+    const cached = this.typeCache.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+
     const type = this.computeProceduralType(rx, rz);
-    this.typeMap[key] = type;
+    // Bounded cache: recomputing is cheap noise, unbounded string maps aren't
+    if (this.typeCache.size >= 30000) {
+      this.typeCache.clear();
+    }
+    this.typeCache.set(key, type);
     return type;
   }
 
-  // Procedural continuous noise equation per biome
+  // Procedural continuous noise equation per biome (delegates to TerrainCore,
+  // the pure math module the multiplayer server shares for course generation)
   private computeProceduralHeight(x: number, z: number): number {
-    const half = this.mapSize / 2;
-    if (Math.abs(x) >= half - 4 || Math.abs(z) >= half - 4) {
-      return 25.0; // Outer boundary lock
-    }
-
-    if (this.biome === 'sprint') {
-      // Neat flat park lawns
-      const n1 = this.noiseGen.noise(x * 0.004, z * 0.004) * 2.5;
-      const n2 = this.noiseGen.noise(x * 0.02, z * 0.02) * 0.8;
-      return n1 + n2 + 5.0;
-    } else if (this.biome === 'dunes') {
-      // Soft rolling sand dunes
-      const n1 = this.noiseGen.noise(x * 0.007, z * 0.007) * 7.5;
-      const n2 = this.noiseGen.noise(x * 0.025, z * 0.025) * 1.5;
-      let height = n1 + n2 + 4.5;
-      if (height < this.waterLevel) {
-        height = Math.max(1.0, height);
-      }
-      return height;
-    } else if (this.biome === 'gullies') {
-      // Severe canyons with dry rocky clefts
-      const n1 = this.noiseGen.noise(x * 0.006, z * 0.006) * 15.0;
-      const n2 = this.noiseGen.noise(x * 0.035, z * 0.035) * 4.5;
-      const cleft = Math.pow(this.noiseGen.noise(x * 0.015, z * 0.015), 3) * 9.0;
-      let height = n1 + n2 - cleft + 6.0;
-      return Math.max(1.0, height);
-    } else {
-      // Alpine Spruce Forests (Default): High peaks, deep stone depressions
-      const n1 = this.noiseGen.noise(x * 0.005, z * 0.005) * 16.0;
-      const n2 = this.noiseGen.noise(x * 0.03, z * 0.03) * 4.0;
-      let height = n1 + n2;
-      if (height < this.waterLevel) {
-        height = Math.max(1.0, height);
-      }
-      return height;
-    }
+    return this.core.getHeight(x, z);
   }
 
   private computeProceduralType(x: number, z: number): VoxelType {
-    const height = this.getTerrainHeight(x, z);
+    // Pure procedural worlds share the exact core math with the server
+    if (Object.keys(this.heightMap).length === 0) {
+      return this.core.getType(x, z);
+    }
 
+    // Imported DEM map with a sparse missing key: derive a sane type from the
+    // imported heights (the full feature map normally covers every cell)
+    const height = this.getTerrainHeight(x, z);
     if (height <= this.waterLevel) {
       return 'water';
     }
-
-    // Check steepness slope
-    const hR = this.getTerrainHeight(x + 1, z);
-    const hL = this.getTerrainHeight(x - 1, z);
-    const hF = this.getTerrainHeight(x, z + 1);
-    const hB = this.getTerrainHeight(x, z - 1);
-    
     const maxSlope = Math.max(
-      Math.abs(height - hR),
-      Math.abs(height - hL),
-      Math.abs(height - hF),
-      Math.abs(height - hB)
+      Math.abs(height - this.getTerrainHeight(x + 1, z)),
+      Math.abs(height - this.getTerrainHeight(x - 1, z)),
+      Math.abs(height - this.getTerrainHeight(x, z + 1)),
+      Math.abs(height - this.getTerrainHeight(x, z - 1))
     );
-
-    if (maxSlope >= 1.8 && this.biome !== 'sprint') {
-      return 'cliff'; // steep rocky zone
+    if (maxSlope >= 1.8) {
+      return 'cliff';
     }
-
-    // Paths generation
-    const pathNoise = Math.sin(x * 0.05) * Math.cos(z * 0.05);
-    const pathChance = this.noiseGen.noise(x * 0.015, z * 0.015);
-    if (pathChance > 0.72 && Math.abs(pathNoise) < 0.04) {
-      return 'path';
-    }
-
-    // Vegetation scatter thresholds
-    const vegNoise = this.noiseGen.noise(x * 0.04 + 10, z * 0.04 + 10);
-    
-    if (this.biome === 'sprint') {
-      // Tidy hedges and garden lawn layouts
-      if (vegNoise > 0.76) {
-        return 'thicket'; // solid hedge wall
-      } else if (vegNoise > 0.60) {
-        return 'walk'; // slower garden flowers
-      } else if (vegNoise > 0.45) {
-        return 'forest'; // neat park vegetation
-      }
-      return 'field';
-    } else if (this.biome === 'dunes') {
-      // Mostly yellow fields (sands) with sea grass
-      if (vegNoise > 0.85) {
-        return 'thicket';
-      } else if (vegNoise > 0.68) {
-        return 'walk';
-      } else if (vegNoise > 0.50) {
-        return 'forest';
-      }
-      return 'field';
-    } else if (this.biome === 'gullies') {
-      // Arid desert canyons: mostly bare dry soil
-      if (vegNoise > 0.88) {
-        return 'thicket';
-      } else if (vegNoise > 0.75) {
-        return 'walk';
-      } else if (vegNoise > 0.65) {
-        return 'forest';
-      }
-      return 'field';
-    } else {
-      // Alpine
-      if (vegNoise > 0.82) {
-        return 'thicket';
-      } else if (vegNoise > 0.62) {
-        return 'walk';
-      } else if (vegNoise > 0.42) {
-        return 'forest';
-      }
-      return 'field';
-    }
+    return 'forest';
   }
 
   // Load custom height and features maps (digital imports)
@@ -470,6 +380,7 @@ export class Terrain {
     this.mapSize = size;
     this.heightMap = {};
     this.typeMap = {};
+    this.typeCache.clear();
 
     const half = size / 2;
     for (let rz = 0; rz < size; rz++) {
@@ -582,6 +493,13 @@ export class Terrain {
       }
     }
 
+    // Coarse far-terrain ring follows the player chunk (rebuild only on cross)
+    if (this.farRingChunkX !== pChunkX || this.farRingChunkZ !== pChunkZ) {
+      this.farRingChunkX = pChunkX;
+      this.farRingChunkZ = pChunkZ;
+      this.rebuildFarRing(pChunkX * this.chunkSize, pChunkZ * this.chunkSize);
+    }
+
     // Move single water plane sheet to center on player chunk to optimize geometry draws
     if (this.waterMesh) {
       const wxOffset = pChunkX * this.chunkSize;
@@ -602,6 +520,58 @@ export class Terrain {
         depthAttr.needsUpdate = true;
       }
     }
+  }
+
+  // 512m coarse heightfield around the player, sitting 0.5m below true height
+  // so the active high-res chunks always render on top of it. No shadows, no
+  // detail shader — fog and distance carry it. Hilltop views get rolling
+  // forest ridges out to the fog line instead of a void past the 5x5 grid.
+  private rebuildFarRing(centerX: number, centerZ: number) {
+    const ringSize = 512;
+    const segments = 24;
+
+    if (!this.farRingMesh) {
+      const geometry = new THREE.PlaneGeometry(ringSize, ringSize, segments, segments);
+      geometry.rotateX(-Math.PI / 2);
+      const vertCount = (segments + 1) * (segments + 1);
+      geometry.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(vertCount * 3), 3));
+
+      const material = new THREE.MeshLambertMaterial({ vertexColors: true });
+      this.farRingMesh = new THREE.Mesh(geometry, material);
+      this.farRingMesh.castShadow = false;
+      this.farRingMesh.receiveShadow = false;
+      this.farRingMesh.frustumCulled = false; // it surrounds the camera
+      this.chunkGroup.add(this.farRingMesh);
+    }
+
+    const geom = this.farRingMesh.geometry;
+    const posAttr = geom.getAttribute('position') as THREE.BufferAttribute;
+    const colorAttr = geom.getAttribute('color') as THREE.BufferAttribute;
+    const color = new THREE.Color();
+    const stone = new THREE.Color('#7a7a72');
+    const snow = new THREE.Color('#f0f0f0');
+
+    for (let i = 0; i < posAttr.count; i++) {
+      const wx = centerX + posAttr.getX(i);
+      const wz = centerZ + posAttr.getZ(i);
+      const h = this.getTerrainHeight(wx, wz);
+      posAttr.setY(i, h - 0.5);
+
+      const type = this.getTerrainType(wx, wz);
+      color.set(this.getNaturalColorHex(type, h));
+      if (h > 11.5) color.lerp(snow, Math.min(1, (h - 11.5) / 4) * 0.7);
+      if (h > 18) {
+        const ridge = Math.min(1.0, (h - 18) / 6);
+        color.lerp(stone, ridge * 0.85);
+        color.lerp(snow, ridge * 0.8);
+      }
+      colorAttr.setXYZ(i, color.r, color.g, color.b);
+    }
+    posAttr.needsUpdate = true;
+    colorAttr.needsUpdate = true;
+    geom.computeVertexNormals();
+
+    this.farRingMesh.position.set(centerX, 0, centerZ);
   }
 
   private buildTerrainChunk(cx: number, cz: number): THREE.Mesh {
@@ -699,52 +669,16 @@ export class Terrain {
     return chunkMesh;
   }
 
-  // Animate gentle water ripples and dynamic chunk loading centered on playerPos
+  // Advance GPU water waves and dynamic chunk loading centered on playerPos
   public update(time: number, playerPos?: THREE.Vector3) {
     if (playerPos) {
       this.updateChunkGrid(playerPos.x, playerPos.z);
     }
 
-    if (this.waterMesh) {
-      const posAttr = this.waterMesh.geometry.getAttribute('position') as THREE.BufferAttribute;
-      const colorAttr = this.waterMesh.geometry.getAttribute('color') as THREE.BufferAttribute;
-      
-      const waterBaseColorHex = this.naturalColors[this.biome]?.water || '#1a6f9e';
-      const waterBaseColor = new THREE.Color(waterBaseColorHex);
-
-      // Get water sheet offset coordinates in world
-      const wxOffset = this.waterMesh.position.x;
-      const wzOffset = this.waterMesh.position.z;
-
-      for (let i = 0; i < posAttr.count; i++) {
-        // Find local coordinates on sheet and translate to world for ripple waves
-        const lx = posAttr.getX(i);
-        const lz = posAttr.getZ(i);
-        
-        const wx = wxOffset + lx;
-        const wz = wzOffset + lz;
-
-        // Multi-frequency wave formula
-        const wave1 = Math.sin(time * 1.6 + wx * 0.06 + wz * 0.04) * 0.08;
-        const wave2 = Math.cos(time * 2.2 - wx * 0.12 + wz * 0.10) * 0.04;
-        const wave3 = Math.sin(time * 0.8 + wx * 0.02 - wz * 0.02) * 0.12;
-        const wave = wave1 + wave2 + wave3;
-        posAttr.setY(i, wave); 
-
-        // Dynamic white wave crest foam highlighting
-        const crestThreshold = 0.03;
-        const maxWaveHeight = 0.18;
-        const foamFactor = Math.max(0, Math.min(1, (wave - crestThreshold) / (maxWaveHeight - crestThreshold)));
-
-        // Interpolate colors: base water color -> white foam
-        const r = waterBaseColor.r + (1.0 - waterBaseColor.r) * foamFactor;
-        const g = waterBaseColor.g + (1.0 - waterBaseColor.g) * foamFactor;
-        const b = waterBaseColor.b + (1.0 - waterBaseColor.b) * foamFactor;
-
-        colorAttr.setXYZ(i, r, g, b);
-      }
-      posAttr.needsUpdate = true;
-      colorAttr.needsUpdate = true;
+    // Waves + crest foam run in the water shader; CPU only advances time
+    const waterShader = this.materials['water']?.userData.shader;
+    if (waterShader) {
+      waterShader.uniforms.uTime.value = time;
     }
   }
 
@@ -761,6 +695,11 @@ export class Terrain {
   }
 
   public dispose() {
+    if (this.farRingMesh) {
+      (this.farRingMesh.material as THREE.Material).dispose();
+      this.farRingMesh = null;
+    }
+
     // Clear old meshes and dispose geometries/materials
     while (this.chunkGroup.children.length > 0) {
       const child = this.chunkGroup.children[0] as THREE.Mesh;

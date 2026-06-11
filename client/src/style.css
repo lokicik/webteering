@@ -1,17 +1,39 @@
+/* Hallmark · genre: atmospheric · theme: custom Expedition · design-system: design.md · designed-as-app */
+@import './tokens.css';
+
+/* Legacy variable names alias onto the Expedition tokens so the whole
+   stylesheet re-themes through the cascade. New rules use tokens directly. */
 :root {
-  --primary-color: #ff6600; /* Orienteering Orange */
-  --primary-glow: rgba(255, 102, 0, 0.4);
-  --accent-color: #00ccff; /* Cyber Cyan */
-  --accent-glow: rgba(0, 204, 255, 0.4);
-  --bg-dark: #080a0f;
-  --panel-bg: rgba(13, 17, 28, 0.7);
-  --panel-bg-hud: rgba(8, 12, 22, 0.85);
-  --glass-border: rgba(255, 255, 255, 0.08);
-  --text-primary: #f0f4f8;
-  --text-secondary: #8c9ba5;
-  --font-sans: 'Outfit', sans-serif;
-  --font-mono: 'Share Tech Mono', monospace;
-  --transition-speed: 0.25s;
+  --primary-color: var(--color-accent);
+  --primary-glow: var(--color-accent-soft);
+  --accent-color: var(--color-accent); /* single-accent discipline: the old cyan routes to flag orange */
+  --accent-glow: var(--color-accent-soft);
+  --bg-dark: var(--color-paper);
+  --panel-bg: var(--surface-panel);
+  --panel-bg-hud: var(--surface-hud);
+  --glass-border: var(--color-rule);
+  --text-primary: var(--color-ink);
+  --text-secondary: var(--color-ink-2);
+  --font-sans: var(--font-body);
+  --transition-speed: var(--dur-short);
+}
+
+/* Focus visibility: instant amber ring on every interactive element */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 120ms !important;
+  }
 }
 
 * {
@@ -99,28 +121,26 @@ body, html {
   top: 0;
   left: 0;
   width: 100%;
-  height: 4px;
-  background: linear-gradient(90deg, var(--primary-color), var(--accent-color));
+  height: 2px;
+  background: var(--color-accent);
 }
 
 .text-center {
   text-align: center;
 }
 
-/* Typography & Glows */
+/* Typography */
 .logo {
-  font-family: var(--font-sans);
+  font-family: var(--font-display);
   font-weight: 800;
   font-size: 3.5rem;
-  letter-spacing: 5px;
-  background: linear-gradient(135deg, #ffffff 0%, #a6b8c7 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  letter-spacing: 0.08em;
+  color: var(--color-ink);
   margin-bottom: 5px;
 }
 
 .glow {
-  text-shadow: 0 0 20px var(--primary-glow);
+  text-shadow: none;
 }
 
 .subtitle {
@@ -183,39 +203,35 @@ body, html {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--primary-color) 0%, #e04400 100%);
-  color: white;
-  box-shadow: 0 4px 15px var(--primary-glow);
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
 }
 
 .btn-primary:hover {
   transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(255, 102, 0, 0.6);
-  filter: brightness(1.1);
+  filter: brightness(1.08);
 }
 
 .btn-secondary {
-  background: rgba(255, 255, 255, 0.04);
+  background: transparent;
   color: var(--text-primary);
   border-color: var(--glass-border);
 }
 
 .btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.2);
+  background: var(--color-paper-3);
+  border-color: var(--color-ink-2);
   transform: translateY(-2px);
 }
 
 .btn-accent {
-  background: linear-gradient(135deg, var(--accent-color) 0%, #0088cc 100%);
-  color: white;
-  box-shadow: 0 4px 15px var(--accent-glow);
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
 }
 
 .btn-accent:hover {
   transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(0, 204, 255, 0.6);
-  filter: brightness(1.1);
+  filter: brightness(1.08);
 }
 
 .btn-primary-sm, .btn-secondary-sm {
@@ -1048,6 +1064,20 @@ body, html {
   z-index: 4;
 }
 
+/* Wrong-checkpoint punch rejection shake (margin-based: the prompt centers
+   itself with a translateX transform we must not override) */
+@keyframes prompt-shake {
+  0%, 100% { margin-left: 0; }
+  20% { margin-left: -8px; }
+  40% { margin-left: 7px; }
+  60% { margin-left: -5px; }
+  80% { margin-left: 3px; }
+}
+#action-prompt.prompt-error-shake {
+  animation: prompt-shake 0.4s ease-out;
+  border-color: #ff3333;
+}
+
 .key-indicator {
   font-family: var(--font-mono);
   font-weight: 900;
@@ -1604,20 +1634,21 @@ body, html {
    STUNNING HERO LANDING PAGE AND FORTNITE LOBBY CUSTOM SYSTEMS
    ========================================================================== */
 
-/* 1. Global Custom Property Variables */
+/* 1. Lobby legacy variables — retargeted onto the Expedition tokens.
+   Single-accent discipline: the old yellow/cyan/orange trio all route to
+   the one control-flag orange. */
 :root {
-  --fortnite-yellow: #ffd400;
-  --fortnite-yellow-glow: rgba(255, 212, 0, 0.35);
-  --neon-cyan: #00ccff;
-  --neon-cyan-glow: rgba(0, 204, 255, 0.45);
-  --neon-orange: #ff6600;
-  --neon-orange-glow: rgba(255, 102, 0, 0.4);
-  --lobby-bg-dark: #0a0e17;
-  --glass-panel-bg: rgba(12, 19, 36, 0.65);
-  --glass-panel-blur: blur(14px);
-  --glass-panel-border: 1px solid rgba(255, 255, 255, 0.08);
-  --font-tech: 'Share Tech Mono', monospace;
-  --font-sans: 'Outfit', sans-serif;
+  --fortnite-yellow: var(--color-accent);
+  --fortnite-yellow-glow: var(--color-accent-soft);
+  --neon-cyan: var(--color-accent);
+  --neon-cyan-glow: var(--color-accent-soft);
+  --neon-orange: var(--color-accent);
+  --neon-orange-glow: var(--color-accent-soft);
+  --lobby-bg-dark: var(--color-paper);
+  --glass-panel-bg: var(--surface-panel);
+  --glass-panel-blur: blur(8px);
+  --glass-panel-border: 1px solid var(--color-rule);
+  --font-tech: var(--font-mono);
 }
 
 /* Base body lock rules when menu is open */
@@ -1642,15 +1673,33 @@ body {
 }
 
 /* 2. Hero Landing Page Stylesheet */
+/* Landing — Manifesto: a statement floating over the live 3D forest.
+   No panel box; the scene IS the enrichment. */
+.landing-manifesto {
+  background: linear-gradient(180deg, oklch(12% 0.02 160 / 0.55) 0%, oklch(12% 0.02 160 / 0.2) 45%, oklch(12% 0.02 160 / 0.75) 100%);
+  backdrop-filter: none;
+}
+
+.landing-kicker {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.35em;
+  color: var(--color-accent);
+  margin-bottom: var(--space-sm);
+}
+
+.landing-feature-line {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  color: var(--color-ink-2);
+  margin-top: var(--space-xl);
+}
+
 .landing-container {
   max-width: 850px;
   width: 90%;
   padding: 40px 50px !important;
-  background: var(--glass-panel-bg) !important;
-  backdrop-filter: var(--glass-panel-blur) !important;
-  border: var(--glass-panel-border) !important;
-  border-radius: 24px !important;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 40px rgba(0, 204, 255, 0.05);
   animation: landing-fade-in 0.8s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -1660,29 +1709,19 @@ body {
 }
 
 .landing-logo {
-  font-size: 3.5rem !important;
+  font-family: var(--font-display) !important;
+  font-size: var(--text-display) !important;
   font-weight: 800 !important;
-  letter-spacing: 8px !important;
-  background: linear-gradient(135deg, #ffffff 0%, #a2b4cd 50%, #00ccff 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  margin-bottom: 5px !important;
-}
-
-.landing-subtitle {
-  font-family: var(--font-tech);
-  font-size: 1.1rem;
-  color: var(--neon-cyan);
-  text-transform: uppercase;
-  letter-spacing: 3px;
-  margin-bottom: 25px;
+  letter-spacing: 0.06em !important;
+  color: var(--color-ink);
+  margin-bottom: var(--space-sm) !important;
 }
 
 .landing-description {
-  font-size: 0.95rem;
-  color: #a2a8b9;
-  line-height: 1.6;
-  max-width: 650px;
+  font-size: var(--text-md);
+  color: var(--color-ink-2);
+  line-height: 1.65;
+  max-width: 560px;
   margin: 0 auto 35px auto;
 }
 
@@ -1735,12 +1774,7 @@ body {
   margin-top: 15px;
 }
 
-.btn-accent {
-  background: linear-gradient(135deg, var(--neon-cyan) 0%, #0088cc 100%);
-  color: white;
-}
-
-/* 3. Unified Fortnite-style Lobby HUD */
+/* 3. Unified Lobby HUD */
 #lobby-screen {
   flex-direction: column;
   justify-content: flex-start;
@@ -1769,10 +1803,11 @@ body {
 }
 
 .fortnite-logo {
-  font-size: 1.8rem;
-  font-weight: 900;
-  letter-spacing: 3px;
-  color: white;
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--color-ink);
   text-shadow: 0 0 12px rgba(255, 255, 255, 0.15);
 }
 
@@ -2288,40 +2323,37 @@ body {
 }
 
 .btn-fortnite-play {
-  background: linear-gradient(135deg, var(--fortnite-yellow) 0%, #cc9900 100%);
+  background: var(--color-accent);
   border: none;
-  border-radius: 6px;
-  color: #060910;
-  font-family: var(--font-sans);
-  font-size: 1.6rem;
-  font-weight: 900;
-  letter-spacing: 3px;
+  border-radius: var(--radius-input);
+  color: var(--color-accent-ink);
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   padding: 15px 50px;
   cursor: pointer;
-  box-shadow: 0 10px 25px var(--fortnite-yellow-glow);
-  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-  text-shadow: 0 1px 2px rgba(255,255,255,0.3);
+  transition: transform var(--dur-short) var(--ease-out), filter var(--dur-short) var(--ease-out);
 }
 
 .btn-fortnite-play:hover {
-  transform: scale(1.04) translateY(-2px);
-  box-shadow: 0 15px 30px rgba(255, 212, 0, 0.5);
-  background: linear-gradient(135deg, #ffe033 0%, #e6aa00 100%);
+  transform: translateY(-2px);
+  filter: brightness(1.08);
 }
 
 .btn-fortnite-play:active {
-  transform: scale(0.97) translateY(0);
+  transform: translateY(0);
+  filter: brightness(0.96);
 }
 
 .btn-fortnite-play.ready-active {
-  background: linear-gradient(135deg, #33ff33 0%, #00aa00 100%);
-  box-shadow: 0 10px 25px rgba(51, 255, 51, 0.3);
-  color: #030803;
+  background: var(--color-success);
+  color: var(--color-accent-ink);
 }
 
 .btn-fortnite-play.ready-active:hover {
-  background: linear-gradient(135deg, #66ff66 0%, #00cc00 100%);
-  box-shadow: 0 15px 30px rgba(51, 255, 51, 0.45);
+  filter: brightness(1.08);
 }
 
 /* LOCKER Tab Specific styles */
@@ -2524,15 +2556,10 @@ body {
   margin-bottom: 0;
 }
 
-/* Pulse animation utility */
+/* Expedition system: idle UI does not pulse. The class is kept as a no-op so
+   existing markup/JS that toggles it keeps working. */
 .animate-pulse-glow {
-  animation: pulse-glow 2.5s infinite ease-in-out;
-}
-
-@keyframes pulse-glow {
-  0% { box-shadow: 0 8px 20px rgba(255, 212, 0, 0.25); }
-  50% { box-shadow: 0 10px 30px rgba(255, 212, 0, 0.55); }
-  100% { box-shadow: 0 8px 20px rgba(255, 212, 0, 0.25); }
+  animation: none;
 }
 
 /* Custom sound toggle soundtrack flashing animation */

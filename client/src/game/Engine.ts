@@ -48,6 +48,7 @@ export class Engine {
 
   private lightningIntensity = 0.0;
   private lightningChance = 0.0018; // probability per frame
+  private weatherSampleFrame = 0; // rotates terrain-collision checks across frames
   private baseAmbientIntensity = 0.6;
   private baseSunIntensity = 0.8;
   private baseBgColor = new THREE.Color(0x7ec0ee);
@@ -361,18 +362,26 @@ export class Engine {
       const posAttr = this.weatherGeometry.getAttribute('position') as THREE.BufferAttribute;
       const array = posAttr.array as Float32Array;
       
+      // Terrain collision checks rotate through 1/4 of the particles per frame:
+      // physics still runs on all of them, but ground-height noise sampling is
+      // the expensive part and a particle near the ground gets caught within
+      // ~3 frames anyway (also a 1.5m altitude floor short-circuits high ones)
+      this.weatherSampleFrame = (this.weatherSampleFrame + 1) % 4;
+
       if (this.isSnowMode) {
         const count = posAttr.count; // number of snow particles
         for (let i = 0; i < count; i++) {
           const idx = i * 3;
-          
+
           // Slow drifting falling motion + gentle swaying wind drift
           array[idx+1] -= 3.8 * delta; // slow fall (3.8 m/s)
           array[idx] += Math.sin(this.clock.getElapsedTime() + idx) * 0.8 * delta; // sway drift
-          
+
+          if (i % 4 !== this.weatherSampleFrame) continue;
+
           const rx = array[idx];
           const rz = array[idx+2];
-          
+
           // Determine local terrain height for collisions
           let terrainY = 0;
           if (this.terrain) {
@@ -380,7 +389,7 @@ export class Engine {
             const worldZ = this.camera.position.z + rz;
             terrainY = this.terrain.getTerrainHeight(worldX, worldZ);
           }
-          
+
           // Reset top if falls below terrain ground height
           if (array[idx+1] < terrainY) {
             array[idx] = (Math.random() - 0.5) * 45;
@@ -392,14 +401,23 @@ export class Engine {
         const count = posAttr.count / 2; // number of rain needles
         for (let i = 0; i < count; i++) {
           const idx = i * 6;
-          
+
           // Fast falling motion
           array[idx+1] -= 22 * delta;
           array[idx+4] -= 22 * delta;
-          
+
+          if (i % 4 !== this.weatherSampleFrame) {
+            // Cheap hard floor so unsampled needles never tunnel far underground
+            if (array[idx+1] < -8) {
+              array[idx+1] = 25;
+              array[idx+4] = 24.2;
+            }
+            continue;
+          }
+
           const rx = array[idx];
           const rz = array[idx+2];
-          
+
           // Determine local terrain height for collisions
           let terrainY = 0;
           if (this.terrain) {
@@ -407,17 +425,17 @@ export class Engine {
             const worldZ = this.camera.position.z + rz;
             terrainY = this.terrain.getTerrainHeight(worldX, worldZ);
           }
-          
+
           // Reset top if falls below terrain ground height
           if (array[idx+1] < terrainY) {
             const newRx = (Math.random() - 0.5) * 45;
             const newRy = 25 + Math.random() * 7;
             const newRz = (Math.random() - 0.5) * 45;
-            
+
             array[idx] = newRx;
             array[idx+1] = newRy;
             array[idx+2] = newRz;
-            
+
             array[idx+3] = newRx;
             array[idx+4] = newRy - 0.8;
             array[idx+5] = newRz;

@@ -1,0 +1,67 @@
+/* Hallmark · genre: atmospheric · theme: custom Expedition · design-system: design.md · designed-as-app
+ * vibe: premium outdoor topographic expedition
+ * paper oklch(20% 0.02 160) · accent oklch(68% 0.17 45) warm-orange · Archivo + Outfit + Share Tech Mono
+ * axes: dark / geometric-sans / warm
+ */
+
+:root {
+  /* Color — Expedition */
+  --color-paper: oklch(20% 0.02 160);
+  --color-paper-2: oklch(24% 0.02 160);
+  --color-paper-3: oklch(28% 0.02 150);
+  --color-ink: oklch(94% 0.01 90);
+  --color-ink-2: oklch(70% 0.015 130);
+  --color-rule: oklch(34% 0.02 150);
+  --color-accent: oklch(68% 0.17 45);
+  --color-accent-soft: oklch(68% 0.17 45 / 0.16);
+  --color-accent-ink: oklch(15% 0.03 45);
+  --color-focus: oklch(80% 0.12 80);
+  --color-map-paper: oklch(95% 0.02 90);
+  --color-danger: oklch(60% 0.21 25);
+  --color-success: oklch(70% 0.14 150);
+
+  /* Surfaces (alpha variants for HUD chrome over the 3D world) */
+  --surface-hud: oklch(20% 0.02 160 / 0.82);
+  --surface-panel: oklch(20% 0.02 160 / 0.92);
+  --surface-raised: oklch(24% 0.02 160 / 0.92);
+
+  /* Type */
+  --font-display: 'Archivo', 'Outfit', sans-serif;
+  --font-body: 'Outfit', sans-serif;
+  --font-mono: 'Share Tech Mono', monospace;
+  --text-xs: 0.72rem;
+  --text-sm: 0.85rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.6rem;
+  --text-2xl: 2.1rem;
+  --text-display: clamp(2.6rem, 6vw, 4.4rem);
+
+  /* Space — 4pt scale */
+  --space-3xs: 0.25rem;
+  --space-2xs: 0.5rem;
+  --space-xs: 0.75rem;
+  --space-sm: 1rem;
+  --space-md: 1.5rem;
+  --space-lg: 2rem;
+  --space-xl: 3rem;
+  --space-2xl: 4.5rem;
+
+  /* Radii */
+  --radius-card: 10px;
+  --radius-input: 8px;
+  --radius-pill: 999px;
+
+  /* Z layers */
+  --z-world: 1;
+  --z-hud: 3;
+  --z-panel: 5;
+  --z-overlay: 9;
+  --z-modal: 10;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-short: 220ms;
+  --dur-instant: 120ms;
+}

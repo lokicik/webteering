@@ -6,7 +6,7 @@
   <title>Webteering - Multiplayer Voxel Orienteering</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@700;800&family=Outfit:wght@300;400;600;800&family=Share+Tech+Mono&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./src/style.css">
 </head>
 <body>
@@ -29,42 +29,24 @@
     </div>
   </div>
 
-  <!-- Hero Landing Screen -->
-  <div id="landing-screen" class="overlay">
-    <div class="landing-container glass-panel text-center">
-      <h1 class="landing-logo logo glow">WEBTEERING</h1>
-      <p class="landing-subtitle">Procedural Voxel Wilderness Navigation</p>
+  <!-- Landing Screen — Manifesto: one statement over the live 3D forest -->
+  <div id="landing-screen" class="overlay landing-manifesto">
+    <div class="landing-container text-center">
+      <p class="landing-kicker">PROCEDURAL ORIENTEERING</p>
+      <h1 class="landing-logo">WEBTEERING</h1>
       <p class="landing-description">
-        Navigate untamed pixelated forests, navigate rugged elevation contours, and stamp sequential checkpoints in competitive real-time multiplayer.
+        A forest, a map, a compass. Read the contours, pick your line,
+        punch every control. Alone against the clock or against your squad.
       </p>
 
-      <div class="landing-features-grid">
-        <div class="feature-card">
-          <div class="feature-icon">🌲</div>
-          <h4>Voxel Wilderness</h4>
-          <p>Procedural biomes (Alpine, Gullies, Dunes) with active weather storms.</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">🧭</div>
-          <h4>Realism Controls</h4>
-          <p>Real physical magnetic needle oscillations and map speed fatigue penalties.</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">📊</div>
-          <h4>Post-Race Splits</h4>
-          <p>Track e-card splits and view absolute post-mortem runner tracks on SVG maps.</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">⚡</div>
-          <h4>Fortnite Lobby</h4>
-          <p>Real-time player pedestals, profile customizer locker, and party room chat.</p>
-        </div>
+      <div class="landing-footer-actions">
+        <button id="btn-enter-lobby" class="btn btn-accent">ENTER BASE CAMP</button>
+        <button id="btn-toggle-soundtrack" class="btn btn-secondary">Soundtrack 🔊</button>
       </div>
 
-      <div class="landing-footer-actions">
-        <button id="btn-toggle-soundtrack" class="btn btn-secondary glow-hover">Toggle Soundtrack 🔊</button>
-        <button id="btn-enter-lobby" class="btn btn-accent glow-hover animate-pulse">ENTER COMMAND CENTER</button>
-      </div>
+      <p class="landing-feature-line">
+        4 biomes &middot; live weather &middot; magnetic compass physics &middot; e-card splits &middot; squad races
+      </p>
     </div>
   </div>
 
@@ -582,11 +564,11 @@
         </div>
         <div class="form-group-sm">
           <label>Active Rain/Storm</label>
-          <input type="checkbox" id="chk-rain">
+          <input type="checkbox" id="chk-rain-game" aria-label="Active rain or storm">
         </div>
         <div class="form-group-sm">
           <label>Time of Day</label>
-          <select id="sel-time">
+          <select id="sel-time-game" class="sync-sel-time" aria-label="Time of day">
             <option value="noon">Sunny Noon</option>
             <option value="sunset">Sunset Glow</option>
             <option value="night">Spooky Night (Headlamp)</option>
@@ -595,7 +577,7 @@
         </div>
         <div class="form-group-sm">
           <label>World Biome</label>
-          <select id="sel-biome">
+          <select id="sel-biome-game" class="sync-sel-biome" aria-label="World biome">
             <option value="alpine">Alpine Spruce Forests</option>
             <option value="dunes">Coastal Sand Dunes</option>
             <option value="gullies">Rocky Ravines</option>
@@ -604,7 +586,7 @@
         </div>
         <div class="form-group-sm">
           <label>Mist/Fog Density</label>
-          <input type="range" id="rng-fog" min="0" max="100" value="15">
+          <input type="range" id="rng-fog-game" min="0" max="100" value="15" aria-label="Mist and fog density">
         </div>
         <div class="form-group-sm">
           <label>Graphics Quality</label>
