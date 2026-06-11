@@ -1,11 +1,21 @@
+import { loadSettings } from '../game/Settings';
+
+export type SoundChannel = 'ambience' | 'sfx' | 'music';
+
 export class Sound {
   private static ctx: AudioContext | null = null;
   private static noiseBuffer: AudioBuffer | null = null;
   private static windSource: AudioBufferSourceNode | null = null;
   private static windGain: GainNode | null = null;
   private static windInterval: any = null;
-  
+
   private static masterFilter: BiquadFilterNode | null = null;
+  private static masterGain: GainNode | null = null;
+  private static buses: Partial<Record<SoundChannel, GainNode>> = {};
+
+  public static hasContext(): boolean {
+    return this.ctx !== null;
+  }
 
   private static getMasterFilter(): BiquadFilterNode {
     const ctx = this.getContext();
@@ -16,6 +26,128 @@ export class Sound {
       this.masterFilter.connect(ctx.destination);
     }
     return this.masterFilter;
+  }
+
+  private static getMasterGain(): GainNode {
+    const ctx = this.getContext();
+    if (!this.masterGain) {
+      this.masterGain = ctx.createGain();
+      this.masterGain.gain.setValueAtTime(loadSettings().masterVol, ctx.currentTime);
+      this.masterGain.connect(this.getMasterFilter());
+    }
+    return this.masterGain;
+  }
+
+  private static getBus(channel: SoundChannel): GainNode {
+    const ctx = this.getContext();
+    let bus = this.buses[channel];
+    if (!bus) {
+      bus = ctx.createGain();
+      const s = loadSettings();
+      const vol = channel === 'ambience' ? s.ambienceVol : channel === 'music' ? s.musicVol : s.sfxVol;
+      bus.gain.setValueAtTime(vol, ctx.currentTime);
+      bus.connect(this.getMasterGain());
+      this.buses[channel] = bus;
+    }
+    return bus;
+  }
+
+  public static setMasterVolume(v: number) {
+    // Pre-gesture there is no context yet; the lazy bus build reads persisted settings
+    if (!this.ctx || !this.masterGain) return;
+    this.masterGain.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
+  }
+
+  public static setChannelVolume(channel: SoundChannel, v: number) {
+    const bus = this.buses[channel];
+    if (!this.ctx || !bus) return;
+    bus.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
+  }
+
+  // --- 3D SPATIAL AUDIO (remote runners, world events) ---
+  private static listenerX = 0;
+  private static listenerY = 0;
+  private static listenerZ = 0;
+
+  // Called once per frame with the camera transform. Never force-creates the
+  // AudioContext (pre-gesture the browser would reject it anyway).
+  public static updateListener(
+    px: number, py: number, pz: number,
+    fx: number, fy: number, fz: number,
+    ux: number, uy: number, uz: number
+  ) {
+    this.listenerX = px;
+    this.listenerY = py;
+    this.listenerZ = pz;
+    if (!this.ctx) return;
+    const listener = this.ctx.listener as any;
+    const t = this.ctx.currentTime;
+    try {
+      if (listener.positionX) {
+        listener.positionX.setTargetAtTime(px, t, 0.05);
+        listener.positionY.setTargetAtTime(py, t, 0.05);
+        listener.positionZ.setTargetAtTime(pz, t, 0.05);
+        listener.forwardX.setTargetAtTime(fx, t, 0.05);
+        listener.forwardY.setTargetAtTime(fy, t, 0.05);
+        listener.forwardZ.setTargetAtTime(fz, t, 0.05);
+        listener.upX.setTargetAtTime(ux, t, 0.05);
+        listener.upY.setTargetAtTime(uy, t, 0.05);
+        listener.upZ.setTargetAtTime(uz, t, 0.05);
+      } else if (listener.setPosition) {
+        // Safari fallback (deprecated API)
+        listener.setPosition(px, py, pz);
+        listener.setOrientation(fx, fy, fz, ux, uy, uz);
+      }
+    } catch (err) {
+      // Fail silently
+    }
+  }
+
+  private static createPanner(x: number, y: number, z: number): PannerNode {
+    const ctx = this.getContext();
+    const panner = ctx.createPanner();
+    panner.panningModel = 'HRTF';
+    panner.distanceModel = 'inverse';
+    panner.refDistance = 2;
+    panner.maxDistance = 60;
+    panner.rolloffFactor = 1.5;
+    panner.positionX.setValueAtTime(x, ctx.currentTime);
+    panner.positionY.setValueAtTime(y, ctx.currentTime);
+    panner.positionZ.setValueAtTime(z, ctx.currentTime);
+    return panner;
+  }
+
+  private static distanceToListener(x: number, y: number, z: number): number {
+    const dx = x - this.listenerX;
+    const dy = y - this.listenerY;
+    const dz = z - this.listenerZ;
+    return Math.sqrt(dx * dx + dy * dy + dz * dz);
+  }
+
+  // Positional footstep for remote runners
+  public static playStepAt(type: string, speedFactor: number, x: number, y: number, z: number) {
+    try {
+      if (!this.ctx) return; // no context until the local player makes a gesture
+      if (this.distanceToListener(x, y, z) > 50) return;
+      const panner = this.createPanner(x, y, z);
+      panner.connect(this.getBus('sfx'));
+      this.playStepInto(panner, type, speedFactor);
+    } catch (err) {
+      // Fail silently
+    }
+  }
+
+  // Positional SI-station beep for remote punches
+  public static playPunchAt(x: number, y: number, z: number) {
+    try {
+      if (!this.ctx) return;
+      if (this.distanceToListener(x, y, z) > 60) return;
+      const panner = this.createPanner(x, y, z);
+      panner.connect(this.getBus('sfx'));
+      this.playPunchInto(panner);
+    } catch (err) {
+      // Fail silently
+    }
   }
 
   public static updateFilter(isSwimming: boolean, stamina: number) {
@@ -59,29 +191,33 @@ export class Sound {
   // Synthesize standard high-pitched SportIdent check-point beep-beep
   public static playPunch() {
     try {
-      const ctx = this.getContext();
-      const playBeep = (delay: number) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(2200, ctx.currentTime + delay); // High-pitched electronic beep
-        
-        gain.gain.setValueAtTime(0.15, ctx.currentTime + delay);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay + 0.08); // short decay
-        
-        osc.connect(gain);
-        gain.connect(this.getMasterFilter());
-        
-        osc.start(ctx.currentTime + delay);
-        osc.stop(ctx.currentTime + delay + 0.08);
-      };
-
-      playBeep(0);
-      playBeep(0.09); // Double beep!
+      this.playPunchInto(this.getBus('sfx'));
     } catch (err) {
       console.warn('Web Audio synthesis failed.', err);
     }
+  }
+
+  private static playPunchInto(destination: AudioNode) {
+    const ctx = this.getContext();
+    const playBeep = (delay: number) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(2200, ctx.currentTime + delay); // High-pitched electronic beep
+
+      gain.gain.setValueAtTime(0.15, ctx.currentTime + delay);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay + 0.08); // short decay
+
+      osc.connect(gain);
+      gain.connect(destination);
+
+      osc.start(ctx.currentTime + delay);
+      osc.stop(ctx.currentTime + delay + 0.08);
+    };
+
+    playBeep(0);
+    playBeep(0.09); // Double beep!
   }
 
   // Synthesize low-frequency out-of-order error buzz
@@ -98,7 +234,7 @@ export class Sound {
       gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
 
       osc.connect(gain);
-      gain.connect(this.getMasterFilter());
+      gain.connect(this.getBus('sfx'));
 
       osc.start(ctx.currentTime);
       osc.stop(ctx.currentTime + 0.22);
@@ -121,7 +257,7 @@ export class Sound {
       gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + (isGo ? 0.35 : 0.08));
 
       osc.connect(gain);
-      gain.connect(this.getMasterFilter());
+      gain.connect(this.getBus('sfx'));
 
       osc.start(ctx.currentTime);
       osc.stop(ctx.currentTime + (isGo ? 0.35 : 0.08));
@@ -159,7 +295,7 @@ export class Sound {
 
       bufferSource.connect(filter);
       filter.connect(gain);
-      gain.connect(this.getMasterFilter());
+      gain.connect(this.getBus('sfx'));
 
       bufferSource.start();
       bufferSource.stop(ctx.currentTime + 0.35);
@@ -186,7 +322,7 @@ export class Sound {
 
       this.windSource.connect(filter);
       filter.connect(this.windGain);
-      this.windGain.connect(this.getMasterFilter());
+      this.windGain.connect(this.getBus('ambience'));
 
       this.windSource.start();
 
@@ -250,7 +386,7 @@ export class Sound {
 
       inhaleSource.connect(inhaleFilter);
       inhaleFilter.connect(inhaleGain);
-      inhaleGain.connect(this.getMasterFilter());
+      inhaleGain.connect(this.getBus('ambience'));
       inhaleSource.start(now);
       inhaleSource.stop(now + breathDuration);
 
@@ -270,7 +406,7 @@ export class Sound {
 
       exhaleSource.connect(exhaleFilter);
       exhaleFilter.connect(exhaleGain);
-      exhaleGain.connect(this.getMasterFilter());
+      exhaleGain.connect(this.getBus('ambience'));
       exhaleSource.start(now + exhaleOffset);
       exhaleSource.stop(now + exhaleOffset + breathDuration * 1.25);
     } catch (err) {
@@ -281,68 +417,72 @@ export class Sound {
   // Synthesize dynamic ground footsteps based on runnability speed penalty types
   public static playStep(type: string, speedFactor: number) {
     try {
-      const ctx = this.getContext();
-      const now = ctx.currentTime;
-      const bufferSource = ctx.createBufferSource();
-      bufferSource.buffer = this.getNoiseBuffer(ctx);
-
-      const filter = ctx.createBiquadFilter();
-      const gain = ctx.createGain();
-
-      let duration = 0.10;
-      let volume = 0.012 * Math.min(1.6, speedFactor + 0.3);
-
-      if (type === 'path') {
-        // Crunchy gravel/dirt scrape
-        filter.type = 'bandpass';
-        filter.frequency.setValueAtTime(1400, now);
-        filter.Q.setValueAtTime(3.5, now);
-        duration = 0.08;
-      } else if (type === 'water') {
-        // Wet sloshing
-        filter.type = 'lowpass';
-        filter.frequency.setValueAtTime(260, now);
-        duration = 0.18;
-        volume *= 1.8;
-      } else if (type === 'thicket') {
-        // Snapping twigs and dry leaves rustling
-        filter.type = 'bandpass';
-        filter.frequency.setValueAtTime(750, now);
-        filter.Q.setValueAtTime(1.8, now);
-        duration = 0.14;
-        volume *= 1.4;
-
-        // Add high pitch snap crackle click
-        const osc = ctx.createOscillator();
-        const oscGain = ctx.createGain();
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(700 + Math.random() * 900, now);
-        oscGain.gain.setValueAtTime(volume * 1.4, now);
-        oscGain.gain.exponentialRampToValueAtTime(0.001, now + 0.025);
-        osc.connect(oscGain);
-        oscGain.connect(this.getMasterFilter());
-        osc.start(now);
-        osc.stop(now + 0.025);
-      } else {
-        // field / forest / walk: soft grass swishing rustle
-        filter.type = 'bandpass';
-        filter.frequency.setValueAtTime(450, now);
-        filter.Q.setValueAtTime(2.0, now);
-        duration = 0.11;
-      }
-
-      gain.gain.setValueAtTime(volume, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
-
-      bufferSource.connect(filter);
-      filter.connect(gain);
-      gain.connect(this.getMasterFilter());
-
-      bufferSource.start(now);
-      bufferSource.stop(now + duration);
+      this.playStepInto(this.getBus('sfx'), type, speedFactor);
     } catch (err) {
       // Fail silently
     }
+  }
+
+  private static playStepInto(destination: AudioNode, type: string, speedFactor: number) {
+    const ctx = this.getContext();
+    const now = ctx.currentTime;
+    const bufferSource = ctx.createBufferSource();
+    bufferSource.buffer = this.getNoiseBuffer(ctx);
+
+    const filter = ctx.createBiquadFilter();
+    const gain = ctx.createGain();
+
+    let duration = 0.10;
+    let volume = 0.012 * Math.min(1.6, speedFactor + 0.3);
+
+    if (type === 'path') {
+      // Crunchy gravel/dirt scrape
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(1400, now);
+      filter.Q.setValueAtTime(3.5, now);
+      duration = 0.08;
+    } else if (type === 'water') {
+      // Wet sloshing
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(260, now);
+      duration = 0.18;
+      volume *= 1.8;
+    } else if (type === 'thicket') {
+      // Snapping twigs and dry leaves rustling
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(750, now);
+      filter.Q.setValueAtTime(1.8, now);
+      duration = 0.14;
+      volume *= 1.4;
+
+      // Add high pitch snap crackle click
+      const osc = ctx.createOscillator();
+      const oscGain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(700 + Math.random() * 900, now);
+      oscGain.gain.setValueAtTime(volume * 1.4, now);
+      oscGain.gain.exponentialRampToValueAtTime(0.001, now + 0.025);
+      osc.connect(oscGain);
+      oscGain.connect(destination);
+      osc.start(now);
+      osc.stop(now + 0.025);
+    } else {
+      // field / forest / walk: soft grass swishing rustle
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(450, now);
+      filter.Q.setValueAtTime(2.0, now);
+      duration = 0.11;
+    }
+
+    gain.gain.setValueAtTime(volume, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+    bufferSource.connect(filter);
+    filter.connect(gain);
+    gain.connect(destination);
+
+    bufferSource.start(now);
+    bufferSource.stop(now + duration);
   }
 
   // Synthesize low-frequency dry rolling thunder cracks with echoes
@@ -365,7 +505,7 @@ export class Sound {
 
       bufferSource.connect(filter);
       filter.connect(gain);
-      gain.connect(this.getMasterFilter());
+      gain.connect(this.getBus('ambience'));
       bufferSource.start(now);
       bufferSource.stop(now + 2.8);
 
@@ -378,7 +518,7 @@ export class Sound {
 
       gain.connect(echoDelay);
       echoDelay.connect(echoGain);
-      echoGain.connect(this.getMasterFilter());
+      echoGain.connect(this.getBus('ambience'));
     } catch (err) {
       // Fail silently
     }
@@ -399,7 +539,7 @@ export class Sound {
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.015);
 
       osc.connect(gain);
-      gain.connect(this.getMasterFilter());
+      gain.connect(this.getBus('sfx'));
 
       osc.start(now);
       osc.stop(now + 0.015);
@@ -423,7 +563,7 @@ export class Sound {
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.26);
 
         osc.connect(gain);
-        gain.connect(this.getMasterFilter());
+        gain.connect(this.getBus('sfx'));
 
         osc.start(now);
         osc.stop(now + 0.26);
@@ -456,7 +596,7 @@ export class Sound {
 
       scrape.connect(scrapeFilter);
       scrapeFilter.connect(scrapeGain);
-      scrapeGain.connect(this.getMasterFilter());
+      scrapeGain.connect(this.getBus('sfx'));
       scrape.start(now);
       scrape.stop(now + 0.32);
 
@@ -476,7 +616,7 @@ export class Sound {
 
       grunt.connect(gruntFilter);
       gruntFilter.connect(gruntGain);
-      gruntGain.connect(this.getMasterFilter());
+      gruntGain.connect(this.getBus('sfx'));
 
       grunt.start(now);
       grunt.stop(now + 0.24);
@@ -505,7 +645,7 @@ export class Sound {
 
       scrape.connect(filter);
       filter.connect(gain);
-      gain.connect(this.getMasterFilter());
+      gain.connect(this.getBus('sfx'));
 
       scrape.start(now);
       scrape.stop(now + 0.12);
@@ -572,7 +712,7 @@ export class Sound {
           gain.gain.exponentialRampToValueAtTime(0.001, now + 4.8); // gentle fade
 
           osc.connect(gain);
-          gain.connect(this.getMasterFilter());
+          gain.connect(this.getBus('music'));
 
           osc.start(now);
           osc.stop(now + 4.8);
