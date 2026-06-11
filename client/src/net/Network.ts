@@ -15,6 +15,7 @@ export class Network {
   public onRoomsList: ((rooms: any[]) => void) | null = null;
   public onChatMessage: ((data: { sender: string; msg: string; color: string }) => void) | null = null;
   public onJoinRejected: ((data: { roomId: string; reason: string }) => void) | null = null;
+  public onPlayerEmote: ((data: { playerId: string; emote: string }) => void) | null = null;
 
 
   constructor() {
@@ -67,6 +68,10 @@ export class Network {
 
     this.socket.on('join-rejected', (data: { roomId: string; reason: string }) => {
       if (this.onJoinRejected) this.onJoinRejected(data);
+    });
+
+    this.socket.on('player-emote', (data: { playerId: string; emote: string }) => {
+      if (this.onPlayerEmote) this.onPlayerEmote(data);
     });
   }
 
@@ -142,5 +147,9 @@ export class Network {
 
   public sendChatMessage(message: string) {
     this.socket.emit('send-chat-message', message);
+  }
+
+  public sendEmote(emote: string) {
+    this.socket.emit('emote', emote);
   }
 }

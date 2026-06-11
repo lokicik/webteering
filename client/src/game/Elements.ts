@@ -1,19 +1,46 @@
 import * as THREE from 'three';
 import { PlayerState, Checkpoint } from '../sharedTypes';
+import { Sound } from '../ui/Sound';
+
+interface RemoteTarget {
+  pos: THREE.Vector3;
+  yaw: number;
+  pitch: number;
+  anim: string;
+  stepAccum: number;       // meters travelled since the last footstep sound
+  lastPos: THREE.Vector3;  // interpolated mesh position last frame
+  emote: string | null;
+  emoteT: number;
+}
 
 export class Elements {
   private scene: THREE.Scene;
-  
+
   // Cache lists
   private otherPlayers: { [id: string]: THREE.Group } = {};
-  private otherPlayersTarget: { [id: string]: { pos: THREE.Vector3; yaw: number; pitch: number; anim: string } } = {};
-  
+  private otherPlayersTarget: { [id: string]: RemoteTarget } = {};
+
+  // Optional terrain hook so remote footsteps match the ground type
+  private terrain: { getTerrainType(x: number, z: number): string } | null = null;
+
   private staticModelsGroup = new THREE.Group();
   private controlFlags: THREE.Group[] = [];
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
     this.scene.add(this.staticModelsGroup);
+  }
+
+  public setTerrain(terrain: { getTerrainType(x: number, z: number): string }) {
+    this.terrain = terrain;
+  }
+
+  // Triggers a short emote animation on a remote runner
+  public playEmote(playerId: string, emote: 'wave' | 'jump' | 'dance') {
+    const target = this.otherPlayersTarget[playerId];
+    if (!target) return;
+    target.emote = emote;
+    target.emoteT = 0;
   }
 
   // --- STATIC VOXEL ASSETS GENERATION ---
@@ -457,7 +484,11 @@ export class Elements {
           pos: new THREE.Vector3(p.x, p.y, p.z),
           yaw: p.rx,
           pitch: p.ry,
-          anim: p.anim
+          anim: p.anim,
+          stepAccum: 0,
+          lastPos: new THREE.Vector3(p.x, p.y, p.z),
+          emote: null,
+          emoteT: 0
         };
       } else {
         // Update interpolation target
@@ -513,6 +544,45 @@ export class Elements {
         uData.rightLeg.rotation.x = 0;
         uData.leftArm.rotation.x = 0;
         uData.rightArm.rotation.x = 0;
+      }
+
+      // 4. Positional footsteps every ~1.15m of travel while running
+      const dxStep = runner.position.x - target.lastPos.x;
+      const dzStep = runner.position.z - target.lastPos.z;
+      target.lastPos.copy(runner.position);
+      if (target.anim === 'run') {
+        target.stepAccum += Math.sqrt(dxStep * dxStep + dzStep * dzStep);
+        if (target.stepAccum >= 1.15) {
+          target.stepAccum = 0;
+          const groundType = this.terrain?.getTerrainType(runner.position.x, runner.position.z) || 'forest';
+          Sound.playStepAt(groundType, 1.0, runner.position.x, runner.position.y, runner.position.z);
+        }
+      } else {
+        target.stepAccum = 0;
+      }
+
+      // 5. Emote overlay (applied on top of the idle pose)
+      if (target.emote) {
+        target.emoteT += delta;
+        const t = target.emoteT;
+        if (t >= 2.5) {
+          target.emote = null;
+          uData.leftArm.rotation.z = 0;
+          uData.rightArm.rotation.z = 0;
+        } else if (target.anim !== 'run' && target.anim !== 'swim') {
+          if (target.emote === 'wave') {
+            uData.rightArm.rotation.z = 2.4;
+            uData.rightArm.rotation.x = Math.sin(t * 10) * 0.45;
+          } else if (target.emote === 'jump') {
+            // Visual hop offset only — never written back into target.pos
+            runner.position.y += Math.max(0, Math.sin(t * 4.5)) * 0.45;
+          } else if (target.emote === 'dance') {
+            uData.leftArm.rotation.z = Math.sin(t * 6) * 0.8;
+            uData.rightArm.rotation.z = -Math.sin(t * 6) * 0.8;
+            uData.leftLeg.rotation.x = Math.sin(t * 6) * 0.4;
+            uData.rightLeg.rotation.x = -Math.sin(t * 6) * 0.4;
+          }
+        }
       }
     }
 

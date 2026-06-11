@@ -163,6 +163,19 @@ io.on('connection', (socket: Socket) => {
     }
   });
 
+  // 6.6. Relay emote triggers to the room (validated + rate-limited)
+  let lastEmoteAt = 0;
+  socket.on('emote', (emote: string) => {
+    if (emote !== 'wave' && emote !== 'jump' && emote !== 'dance') return;
+    const now = Date.now();
+    if (now - lastEmoteAt < 1500) return;
+    lastEmoteAt = now;
+
+    const roomId = roomManager.getPlayerRoomId(socket.id);
+    if (!roomId) return;
+    io.to(roomId).emit('player-emote', { playerId: socket.id, emote });
+  });
+
   // 7. Disconnect and cleanup
   socket.on('disconnect', () => {
     const roomId = roomManager.getPlayerRoomId(socket.id);
