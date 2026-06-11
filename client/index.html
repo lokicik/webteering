@@ -193,6 +193,69 @@
                 <option value="ultra">Ultra (Cinematic)</option>
               </select>
             </div>
+
+            <div class="form-group-sm">
+              <div class="range-labels">
+                <label>Master Volume</label>
+                <span id="vol-master-lbl">100%</span>
+              </div>
+              <input type="range" id="rng-vol-master" min="0" max="100" value="100" aria-label="Master volume">
+            </div>
+            <div class="form-group-sm">
+              <div class="range-labels">
+                <label>Ambience Volume</label>
+                <span id="vol-ambience-lbl">100%</span>
+              </div>
+              <input type="range" id="rng-vol-ambience" min="0" max="100" value="100" aria-label="Ambience volume">
+            </div>
+            <div class="form-group-sm">
+              <div class="range-labels">
+                <label>Effects Volume</label>
+                <span id="vol-sfx-lbl">100%</span>
+              </div>
+              <input type="range" id="rng-vol-sfx" min="0" max="100" value="100" aria-label="Sound effects volume">
+            </div>
+            <div class="form-group-sm">
+              <div class="range-labels">
+                <label>Music Volume</label>
+                <span id="vol-music-lbl">100%</span>
+              </div>
+              <input type="range" id="rng-vol-music" min="0" max="100" value="100" aria-label="Music volume">
+            </div>
+            <div class="form-group-sm">
+              <div class="range-labels">
+                <label>Mouse Sensitivity</label>
+                <span id="sens-lbl">1.0x</span>
+              </div>
+              <input type="range" id="rng-sens" min="8" max="50" value="22" aria-label="Mouse look sensitivity">
+            </div>
+            <div class="form-group-sm">
+              <div class="range-labels">
+                <label>Field of View</label>
+                <span id="fov-lbl">70°</span>
+              </div>
+              <input type="range" id="rng-fov" min="55" max="100" value="70" aria-label="Camera field of view">
+            </div>
+
+            <div id="custom-map-section" class="custom-map-section">
+              <label class="custom-map-title">Custom Map <span class="custom-map-hint">Solo sandbox only · grayscale DEM + IOF color features</span></label>
+              <div class="form-group-sm">
+                <label for="file-dem">Elevation PNG (grayscale)</label>
+                <input type="file" id="file-dem" accept=".png,image/png">
+              </div>
+              <div class="form-group-sm">
+                <label for="file-features">Features PNG (IOF colors)</label>
+                <input type="file" id="file-features" accept=".png,image/png">
+              </div>
+              <div class="form-group-sm">
+                <label for="file-course">Course XML (optional, IOF)</label>
+                <input type="file" id="file-course" accept=".xml,text/xml">
+              </div>
+              <div class="custom-map-actions">
+                <button id="btn-load-example-map" class="btn btn-secondary-sm">Load Example Map</button>
+                <button id="btn-run-custom-map" class="btn btn-secondary-sm" disabled>RUN CUSTOM MAP</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -301,16 +364,16 @@
           <div class="panel-header-badge">🏆 CAREER HIGHLIGHTS</div>
           <div class="career-stats-container">
             <div class="stat-box">
-              <span class="stat-number" id="stat-punches">24</span>
+              <span class="stat-number" id="stat-punches">0</span>
               <span class="stat-title">PUNCHES LOGGED</span>
             </div>
             <div class="stat-box">
-              <span class="stat-number" id="stat-runs">4</span>
+              <span class="stat-number" id="stat-runs">0</span>
               <span class="stat-title">COMPLETED RUNS</span>
             </div>
             <div class="stat-box">
-              <span class="stat-number">101</span>
-              <span class="stat-title">TRAINING TIER</span>
+              <span class="stat-number" id="stat-distance">0.0</span>
+              <span class="stat-title">KM COVERED</span>
             </div>
             <div class="stat-box">
               <span class="stat-number" style="color: #ffaa00;">GOLD</span>
@@ -324,6 +387,17 @@
               <div class="medal-badge" title="Perfect sequential course stamp">🥇 Course Perfect</div>
               <div class="medal-badge" title="Stamped checkpoint during rain storm">🌧️ Rain Runner</div>
               <div class="medal-badge" title="Completed relaxed GPS-free course">🧭 Blind Navigator</div>
+            </div>
+          </div>
+
+          <div class="stats-history">
+            <h4>Personal Bests</h4>
+            <div id="pb-list" class="stats-list">
+              <p class="stats-empty">No finished runs yet — get out there!</p>
+            </div>
+            <h4>Run Log</h4>
+            <div id="run-log-list" class="stats-list">
+              <p class="stats-empty">Your recent runs will appear here.</p>
             </div>
           </div>
         </div>
@@ -438,15 +512,24 @@
   <!-- In-game HUD Overlays -->
   <div id="hud-container" class="hidden">
     <!-- Horizontal Sliding Compass Strip -->
-    <div id="hud-compass-strip-container" style="position: absolute; top: 12px; left: 50%; transform: translateX(-50%); width: 360px; height: 36px; background: rgba(12, 15, 24, 0.72); border: 1.5px solid rgba(255, 255, 255, 0.12); border-radius: 18px; backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; overflow: hidden; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.55); z-index: 100;">
-      <div style="position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: 2px; height: 100%; background: #ffaa00; z-index: 10; box-shadow: 0 0 6px #ffaa00;"></div>
-      <canvas id="hud-compass-strip-canvas" width="360" height="36" style="width: 100%; height: 100%;"></canvas>
+    <div id="hud-compass-strip-container">
+      <div class="compass-strip-marker"></div>
+      <canvas id="hud-compass-strip-canvas" width="360" height="30"></canvas>
     </div>
 
-    <!-- Circular Rotating Topographic Radar HUD -->
-    <div id="minimap-container" style="position: absolute; top: 12px; right: 12px; width: 140px; height: 140px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.18); background: rgba(12, 15, 24, 0.65); box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4); overflow: hidden; backdrop-filter: blur(8px); z-index: 99;">
-      <canvas id="minimap-canvas" width="140" height="140" style="width: 100%; height: 100%;"></canvas>
-      <div class="minimap-player-dot" style="position: absolute; top: 50%; left: 50%; width: 6px; height: 6px; background: #00ccff; border: 1.5px solid #ffffff; border-radius: 50%; transform: translate(-50%, -50%); box-shadow: 0 0 6px #00ccff; z-index: 10;"></div>
+    <!-- Unified top-right corner cluster: minimap + live standings -->
+    <div id="hud-corner-cluster">
+      <div id="minimap-container">
+        <canvas id="minimap-canvas" width="170" height="170"></canvas>
+        <div class="minimap-player-dot"></div>
+      </div>
+      <!-- Live Race Standings Leaderboard -->
+      <div id="leaderboard-panel">
+        <div class="panel-header">STANDINGS</div>
+        <div id="leaderboard-entries" class="leaderboard-list">
+          <!-- Dynamically populated -->
+        </div>
+      </div>
     </div>
     <!-- Top Countdown / Race Status Banner -->
     <div id="race-status-banner">
@@ -467,19 +550,14 @@
       </div>
     </div>
 
-    <!-- Active Checkpoint & E-Card Punch List -->
-    <div id="ecard-panel" class="glass-panel-hud">
-      <div class="panel-header">E-CARD CHECKPOINTS</div>
+    <!-- Active Checkpoint & E-Card: compact chip, full list expands on hover -->
+    <div id="ecard-panel">
+      <div id="ecard-chip">
+        <span id="ecard-chip-progress">CP 0/0</span>
+        <span id="ecard-chip-code"></span>
+      </div>
       <div id="checkpoint-punch-list" class="punch-list">
         <!-- Dynamically populated e.g. "1 [31] 00:43.12" -->
-      </div>
-    </div>
-
-    <!-- Live Race Standings Leaderboard -->
-    <div id="leaderboard-panel" class="glass-panel-hud">
-      <div class="panel-header">LIVE LEADERBOARD</div>
-      <div id="leaderboard-entries" class="leaderboard-list">
-        <!-- Dynamically populated -->
       </div>
     </div>
 
@@ -589,15 +667,6 @@
           <input type="range" id="rng-fog-game" min="0" max="100" value="15" aria-label="Mist and fog density">
         </div>
         <div class="form-group-sm">
-          <label>Graphics Quality</label>
-          <select id="sel-quality-ingame" class="sel-quality">
-            <option value="low">Low (Fastest)</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
-            <option value="ultra">Ultra (Cinematic)</option>
-          </select>
-        </div>
-        <div class="form-group-sm">
           <label>Flight Mode (F)</label>
           <input type="checkbox" id="chk-fly">
         </div>
@@ -613,10 +682,66 @@
 
     <!-- In-game UI Toggles (bottom bar) -->
     <div id="hud-bottom-bar">
-      <button id="btn-toggle-map" class="hud-btn glow-hover" title="Toggle Topographic Map (M)">🗺️ MAP</button>
-      <p class="controls-hint">WASD to Move | Mouse to Look | E to Punch | M for Map | [ / ] to Rotate Bezel</p>
-      <button id="btn-exit-race" class="hud-btn glow-hover" title="Exit to Lobby/Main Menu">🚪 EXIT</button>
-      <button id="btn-toggle-options" class="hud-btn glow-hover hidden" title="Toggle Sandbox Settings">⚙️ SETTINGS</button>
+      <button id="btn-toggle-map" class="hud-btn" title="Toggle Topographic Map (M)" aria-label="Toggle topographic map">🗺️</button>
+      <button id="btn-toggle-options" class="hud-btn hidden" title="Sandbox World Settings" aria-label="Sandbox world settings">⚙️</button>
+      <button id="btn-exit-race" class="hud-btn" title="Exit to Lobby (or press ESC)" aria-label="Exit to lobby">🚪</button>
+    </div>
+  </div>
+
+  <!-- ESC Pause Menu (stops game input; race clock keeps running) -->
+  <div id="pause-menu" class="overlay hidden">
+    <div class="glass-panel pause-panel">
+      <h2>PAUSED</h2>
+      <p class="pause-note">Race clock keeps running</p>
+      <button id="btn-pause-resume" class="btn btn-primary">RESUME</button>
+
+      <div class="pause-settings">
+        <div class="form-group-sm">
+          <label>Graphics Quality</label>
+          <select id="sel-quality-ingame" class="sel-quality">
+            <option value="low">Low (Fastest)</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="ultra">Ultra (Cinematic)</option>
+          </select>
+        </div>
+        <div class="form-group-sm">
+          <label>Master Volume</label>
+          <input type="range" id="rng-vol-master-game" min="0" max="100" value="100" aria-label="Master volume">
+        </div>
+        <div class="form-group-sm">
+          <label>Ambience Volume</label>
+          <input type="range" id="rng-vol-ambience-game" min="0" max="100" value="100" aria-label="Ambience volume">
+        </div>
+        <div class="form-group-sm">
+          <label>Effects Volume</label>
+          <input type="range" id="rng-vol-sfx-game" min="0" max="100" value="100" aria-label="Sound effects volume">
+        </div>
+        <div class="form-group-sm">
+          <label>Music Volume</label>
+          <input type="range" id="rng-vol-music-game" min="0" max="100" value="100" aria-label="Music volume">
+        </div>
+        <div class="form-group-sm">
+          <label>Mouse Sensitivity</label>
+          <input type="range" id="rng-sens-game" min="8" max="50" value="22" aria-label="Mouse look sensitivity">
+        </div>
+        <div class="form-group-sm">
+          <label>Field of View</label>
+          <input type="range" id="rng-fov-game" min="55" max="100" value="70" aria-label="Camera field of view">
+        </div>
+      </div>
+
+      <div class="pause-keys">
+        <span><b>WASD</b> Move</span>
+        <span><b>Mouse</b> Look</span>
+        <span><b>E</b> Punch</span>
+        <span><b>M</b> Map</span>
+        <span><b>[ / ]</b> Bezel</span>
+        <span><b>B</b> Emote</span>
+        <span><b>Shift</b> Walk</span>
+      </div>
+
+      <button id="btn-pause-exit" class="btn btn-secondary">EXIT TO LOBBY</button>
     </div>
   </div>
 
@@ -645,10 +770,25 @@
         <div class="podium-map-wrapper">
           <h3>Post-Race Route Analysis</h3>
           <canvas id="podium-map-canvas" width="300" height="300"></canvas>
+          <div class="replay-controls">
+            <button id="btn-replay-play" class="replay-btn" aria-label="Play or pause route replay">▶</button>
+            <input type="range" id="replay-scrubber" min="0" max="1" value="0" step="100" aria-label="Replay timeline">
+            <span id="replay-time" class="replay-time">0:00</span>
+            <span class="replay-speed-group">
+              <button class="replay-speed-btn" data-speed="1">1x</button>
+              <button class="replay-speed-btn active" data-speed="4">4x</button>
+              <button class="replay-speed-btn" data-speed="16">16x</button>
+            </span>
+            <button id="btn-export-gpx" class="replay-btn replay-gpx-btn" title="Export your route as a GPX file">GPX ⤓</button>
+          </div>
           <div id="podium-map-legend" class="podium-legend">
             <!-- Dynamically populated legend dots -->
           </div>
         </div>
+      </div>
+
+      <div id="podium-splits" class="podium-splits">
+        <!-- Leg-by-leg split table, dynamically populated -->
       </div>
       
       <button id="btn-podium-close" class="btn btn-primary" style="margin-top:20px;">Return to Lobby</button>
@@ -660,6 +800,7 @@
     <div id="joystick-container"></div>
     <button id="btn-mobile-punch" class="mobile-action-btn">PUNCH (E)</button>
     <button id="btn-mobile-map" class="mobile-action-btn">MAP (M)</button>
+    <button id="btn-mobile-pause" class="mobile-action-btn" aria-label="Pause menu">❚❚</button>
   </div>
 
   <!-- Audio synthesiser element -->

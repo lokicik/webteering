@@ -98,9 +98,11 @@ export class HUD {
     if (btnToggle) btnToggle.addEventListener('click', toggle);
     if (btnClose) btnClose.addEventListener('click', toggle);
 
-    // M key keyboard toggle
+    // M key keyboard toggle (inert while the pause menu is open)
     window.addEventListener('keydown', (e) => {
       if (e.code === 'KeyM') {
+        const pauseMenu = document.getElementById('pause-menu');
+        if (pauseMenu && !pauseMenu.classList.contains('hidden')) return;
         toggle();
       }
     });
@@ -460,9 +462,20 @@ export class HUD {
     }
   }
 
-  // Update e-card rows showing checklist and target checkpoint
+  // Update e-card rows showing checklist and target checkpoint.
+  // Also drives the compact chip (the always-visible summary; the full
+  // list expands on hover).
   public updateECard(course: Checkpoint[], punchedCps: number[]) {
     this.activeTargetIndex = punchedCps.length;
+
+    const progressEl = document.getElementById('ecard-chip-progress');
+    const codeEl = document.getElementById('ecard-chip-code');
+    if (progressEl) progressEl.textContent = `CP ${punchedCps.length}/${course.length}`;
+    if (codeEl) {
+      const next = course[punchedCps.length];
+      codeEl.textContent = next ? `NEXT [${next.code}]` : 'DONE';
+    }
+
     this.ecardPanel.innerHTML = '';
 
     course.forEach((cp, idx) => {
@@ -509,7 +522,11 @@ export class HUD {
 
   // Update leaderboard rows. Rows are created once and patched in place —
   // rebuilding via innerHTML every frame caused needless DOM churn while racing.
-  public updateLeaderboard(scoreboard: { [id: string]: any }, localPlayerId: string | null) {
+  public updateLeaderboard(
+    scoreboard: { [id: string]: any },
+    localPlayerId: string | null,
+    players?: { [id: string]: { skinColor: string } }
+  ) {
     // Sort scoreboard entries (1. Finished runners sorted by time, 2. Active runners sorted by CPs count, 3. alphabetically)
     const sorted = Object.values(scoreboard).sort((a, b) => {
       if (a.finished && b.finished) return a.elapsed - b.elapsed;
@@ -526,7 +543,7 @@ export class HUD {
     // Reconcile row count
     while (this.leaderboardPanel.children.length < sorted.length) {
       const row = document.createElement('div');
-      row.innerHTML = '<span class="leader-rank"></span><span class="leader-name"></span><span class="leader-time"></span>';
+      row.innerHTML = '<span class="leader-rank"></span><span class="leader-dot"></span><span class="leader-name"></span><span class="leader-time"></span>';
       this.leaderboardPanel.appendChild(row);
     }
     while (this.leaderboardPanel.children.length > sorted.length) {
@@ -537,23 +554,23 @@ export class HUD {
       const row = this.leaderboardPanel.children[idx] as HTMLElement;
       const isMe = (entry.id === localPlayerId);
 
-      const className = `leader-row ${entry.finished ? 'finished' : ''}`;
+      const className = `leader-row${entry.finished ? ' finished' : ''}${isMe ? ' me' : ''}`;
       if (row.className !== className) row.className = className;
-      row.style.borderColor = isMe ? '#00ccff' : '';
 
       const timeStr = entry.finished ? this.formatTime(entry.elapsed) : `CP ${entry.splits.length}`;
       const spans = row.children;
       const rank = spans[0] as HTMLElement;
-      const name = spans[1] as HTMLElement;
-      const time = spans[2] as HTMLElement;
+      const dot = spans[1] as HTMLElement;
+      const name = spans[2] as HTMLElement;
+      const time = spans[3] as HTMLElement;
 
-      const rankText = `#${idx + 1}`;
+      const rankText = `${idx + 1}`;
       if (rank.textContent !== rankText) rank.textContent = rankText;
-      rank.style.color = idx === 0 ? '#ffdd00' : '';
+
+      const dotColor = players?.[entry.id]?.skinColor.split('|')[0] || 'transparent';
+      if (dot.style.background !== dotColor) dot.style.background = dotColor;
 
       if (name.textContent !== entry.name) name.textContent = entry.name;
-      name.style.color = isMe ? '#00ccff' : '';
-      name.style.fontWeight = isMe ? 'bold' : '';
 
       if (time.textContent !== timeStr) time.textContent = timeStr;
     });
@@ -639,6 +656,11 @@ export class HUD {
     
     // Default fallback: checkpoint flag stand
     return svgHeader + '<rect x="6" y="4" width="12" height="12"/><line x1="6" y1="16" x2="6" y2="20"/></svg>';
+  }
+
+  // Pre-rendered static topo map, used by the podium replay as its backdrop
+  public getStaticMapCanvas(): HTMLCanvasElement {
+    return this.offscreenMapCanvas;
   }
 
   public drawTracksOnCanvas(
@@ -820,13 +842,16 @@ export class HUD {
 
     const centerX = width / 2;
     const centerY = height / 2;
-    const radius = width / 2;
 
     ctx.save();
-    
-    // Create circular clip region for circular minimap
+
+    // Rounded-rect clip (the minimap sits inside the square corner cluster)
     ctx.beginPath();
-    ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    if (typeof (ctx as any).roundRect === 'function') {
+      (ctx as any).roundRect(0, 0, width, height, 10);
+    } else {
+      ctx.rect(0, 0, width, height);
+    }
     ctx.clip();
 
     // Fill background

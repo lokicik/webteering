@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { QualityLevel, QUALITY_PRESETS, loadQualityLevel, saveQualityLevel } from './game/Quality';
+import { GameSettings, loadSettings, saveSettings } from './game/Settings';
+import { StatsStore, RunMode } from './game/StatsStore';
 import { TerrainCore, generateSmartCourse, lcg } from './game/TerrainCore';
 import { Engine } from './game/Engine';
 import { Terrain } from './game/Terrain';
@@ -8,6 +10,11 @@ import { Elements } from './game/Elements';
 import { Network } from './net/Network';
 import { HUD } from './ui/HUD';
 import { Sound } from './ui/Sound';
+import { ReplayPlayer, TimedSample } from './ui/Replay';
+import { exportGpx } from './ui/GpxExport';
+import { TouchControls } from './ui/TouchControls';
+import { MapImporter, ImportedMapData } from './game/MapImporter';
+import { showToast } from './ui/Toast';
 import { Checkpoint, RoomState } from './sharedTypes';
 import { Foliage } from './game/Foliage';
 import { WildlifeManager } from './game/Wildlife';
@@ -31,7 +38,13 @@ class WebteeringApp {
   private tutorialStep = 0;
   
   private isFreeplay = false;
+  private isCustomMap = false;
   private headlamp: THREE.SpotLight | null = null;
+
+  // ESC pause menu state
+  private isPaused = false;
+  private pointerWasLocked = false;
+  private pauseOpenedAt = 0;
   private activeBiome = 'alpine';
   private isRogaine = false;
   private rogainePunchedCps: number[] = [];
@@ -40,8 +53,16 @@ class WebteeringApp {
   private tutorialCourse: Checkpoint[] = [];
 
   // Advanced Upgrades tracking
-  private playerPaths: { [id: string]: { x: number; z: number }[] } = {};
+  private playerPaths: { [id: string]: TimedSample[] } = {};
   private pathRecordTimer = 0.0;
+  private latestRemotePositions: { [id: string]: { x: number; z: number } } = {};
+  private replay: ReplayPlayer | null = null;
+  private touchControls: TouchControls | null = null;
+
+  // Classic sequential freeplay progress (was previously untracked)
+  private freeplayPunchedCps: number[] = [];
+  private localSplits: number[] = []; // cumulative ms per punch in solo modes
+  private activeSeed = 0;
   
   // Blind Search Mode (Relaxed Mode)
   private isRelaxed = false;
@@ -60,6 +81,8 @@ class WebteeringApp {
   private handheldMapTexture: THREE.CanvasTexture | null = null;
   private lastHandheldMapStamp = -1;
   private scratchLookDir = new THREE.Vector3(); // pooled per-frame work vector
+  private scratchListenerFwd = new THREE.Vector3();
+  private scratchListenerUp = new THREE.Vector3();
   private handheldCompassGroup: THREE.Group | null = null;
   private handheldNeedle: THREE.Group | null = null;
   private handheldBezelRing: THREE.Group | null = null;
@@ -99,6 +122,18 @@ class WebteeringApp {
     
     // 4. Initialise First Person controls with terrain heights hook
     this.controls = new Controls(this.engine.camera, this.engine.renderer.domElement, this.terrain);
+
+    // Touch devices get a virtual joystick + drag-look instead of pointer lock
+    if (TouchControls.isTouchDevice()) {
+      this.controls.touchMode = true;
+      this.touchControls = new TouchControls(this.controls);
+    }
+
+    // ESC pause menu (pointer-lock drop + Escape key)
+    this.initPauseMenuListeners();
+
+    // Headless test hook (position assertions in the verify scripts)
+    (window as any).__game = this;
     
     // 5. Initialise static & dynamic voxel models manager
     this.elements = new Elements(this.engine.scene);
@@ -113,7 +148,7 @@ class WebteeringApp {
     this.engine.addUpdatable(this);
 
     // Hide HUD initially
-    document.getElementById('hud-container')?.classList.add('hidden');
+    this.setHudVisible(false);
     
     // Remove loader and landing screen
     document.getElementById('loading-screen')?.classList.add('hidden');
@@ -130,6 +165,9 @@ class WebteeringApp {
     // Hook graphics quality selectors (lobby + in-game panels stay in sync)
     this.initQualityControls();
 
+    // Hook audio/sensitivity/FOV sliders and apply persisted values
+    this.initSettingsControls();
+
     // Mirror the in-game drawer controls onto the lobby ones (which own the
     // actual handlers). Previously both panels shared duplicate IDs, so the
     // in-game copies were dead elements that silently did nothing.
@@ -140,6 +178,103 @@ class WebteeringApp {
 
     // 6. Start the engine loop
     this.engine.start();
+  }
+
+  // --- ESC PAUSE MENU ---
+  private isRaceActive(): boolean {
+    if (this.isLobbyActive) return false;
+    const podium = document.getElementById('podium-screen');
+    if (podium && !podium.classList.contains('hidden')) return false;
+
+    if (this.isFreeplay || this.isTutorial || this.isRelaxed) return true;
+    if (this.activeRoomId && this.roomState) {
+      return this.roomState.status === 'racing' || this.roomState.status === 'countdown';
+    }
+    return false;
+  }
+
+  private openPauseMenu() {
+    if (this.isPaused) return;
+    this.isPaused = true;
+    this.pauseOpenedAt = Date.now();
+    this.controls.setPaused(true);
+    this.keysPressed = {};
+    document.getElementById('pause-menu')?.classList.remove('hidden');
+  }
+
+  private closePauseMenu(relock: boolean) {
+    if (!this.isPaused) return;
+    this.isPaused = false;
+    this.controls.setPaused(false);
+    this.keysPressed = {};
+    document.getElementById('pause-menu')?.classList.add('hidden');
+
+    if (relock && !this.controls.touchMode) {
+      // Chrome enforces a ~1.25s cooldown after an Escape-triggered exit; if
+      // the request is rejected, the existing canvas click handler re-locks
+      // on the player's next click.
+      try {
+        const result = this.engine.renderer.domElement.requestPointerLock() as unknown as Promise<void> | undefined;
+        result?.catch(() => { /* cooldown — click to re-lock */ });
+      } catch {
+        // older browsers throw synchronously; same fallback applies
+      }
+    }
+  }
+
+  private initPauseMenuListeners() {
+    // Open the menu when pointer lock drops mid-race (Escape, alt-tab, etc.).
+    // Only on a locked→unlocked transition so it never fires when lock simply
+    // failed to engage (headless runs, user denial at race start).
+    document.addEventListener('pointerlockchange', () => {
+      const lockedNow = document.pointerLockElement === this.engine.renderer.domElement;
+      const wasLocked = this.pointerWasLocked;
+      this.pointerWasLocked = lockedNow;
+
+      if (wasLocked && !lockedNow && this.isRaceActive() && !this.isPaused && !this.controls.touchMode) {
+        this.openPauseMenu();
+      }
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (e.code !== 'Escape') return;
+      if (this.isPaused) {
+        // Browsers can deliver the lock-exiting Escape keydown too — debounce
+        if (Date.now() - this.pauseOpenedAt > 250) this.closePauseMenu(true);
+      } else if (this.isRaceActive() && (this.controls.touchMode || !document.pointerLockElement)) {
+        this.openPauseMenu();
+      }
+    });
+  }
+
+  private exitToLobby() {
+    if (this.isTutorial) {
+      this.exitTutorial();
+    } else if (this.isFreeplay) {
+      this.exitFreeplay();
+    } else if (this.isRelaxed) {
+      this.exitRelaxedMode();
+    } else if (this.activeRoomId) {
+      this.network.leaveRoom();
+      this.activeRoomId = null;
+      this.roomState = null;
+      this.isLocalReady = false;
+      this.elements.clearStaticEntities();
+      this.foliage.clear();
+
+      document.getElementById('room-active-footer')?.classList.add('hidden');
+      this.setHudVisible(false);
+      document.getElementById('lobby-screen')?.classList.remove('hidden');
+
+      this.isLobbyActive = true;
+      this.rebuildLobby3D();
+    }
+  }
+
+  // Single place that shows/hides the in-game HUD; the touch overlay follows it
+  private setHudVisible(visible: boolean) {
+    document.getElementById('hud-container')?.classList.toggle('hidden', !visible);
+    document.getElementById('mobile-controls')?.classList.toggle('hidden', !visible || !this.touchControls);
   }
 
   // Two-way binding between a lobby control (owner of the real handler) and
@@ -161,6 +296,68 @@ class WebteeringApp {
       owner.dispatchEvent(new Event(evt));
     });
     owner.addEventListener(evt, () => copy(owner, twin));
+  }
+
+  private initSettingsControls() {
+    const settings = loadSettings();
+
+    // Apply persisted non-audio values immediately (audio buses read settings lazily)
+    this.controls.mouseSensitivity = settings.mouseSens;
+    this.engine.setFOV(settings.fov);
+
+    // ownerId -> [read slider into settings + apply, write settings into slider value]
+    const wire = (
+      ownerId: string,
+      label: string | null,
+      toValue: (s: GameSettings) => number,
+      apply: (raw: number, s: GameSettings) => string
+    ) => {
+      const owner = document.getElementById(ownerId) as HTMLInputElement | null;
+      if (!owner) return;
+      owner.value = String(toValue(settings));
+      const lbl = label ? document.getElementById(label) : null;
+      const onInput = () => {
+        const raw = parseFloat(owner.value);
+        const text = apply(raw, settings);
+        if (lbl) lbl.textContent = text;
+        saveSettings(settings);
+      };
+      owner.addEventListener('input', onInput);
+      onInput();
+      this.bindSettingPair(ownerId, `${ownerId}-game`, 'input');
+    };
+
+    wire('rng-vol-master', 'vol-master-lbl', (s) => s.masterVol * 100, (raw, s) => {
+      s.masterVol = raw / 100;
+      Sound.setMasterVolume(s.masterVol);
+      return `${Math.round(raw)}%`;
+    });
+    wire('rng-vol-ambience', 'vol-ambience-lbl', (s) => s.ambienceVol * 100, (raw, s) => {
+      s.ambienceVol = raw / 100;
+      Sound.setChannelVolume('ambience', s.ambienceVol);
+      return `${Math.round(raw)}%`;
+    });
+    wire('rng-vol-sfx', 'vol-sfx-lbl', (s) => s.sfxVol * 100, (raw, s) => {
+      s.sfxVol = raw / 100;
+      Sound.setChannelVolume('sfx', s.sfxVol);
+      return `${Math.round(raw)}%`;
+    });
+    wire('rng-vol-music', 'vol-music-lbl', (s) => s.musicVol * 100, (raw, s) => {
+      s.musicVol = raw / 100;
+      Sound.setChannelVolume('music', s.musicVol);
+      return `${Math.round(raw)}%`;
+    });
+    // Slider 8..50 maps to 0.0008..0.0050 rad/px (22 = default 1.0x)
+    wire('rng-sens', 'sens-lbl', (s) => s.mouseSens * 10000, (raw, s) => {
+      s.mouseSens = raw / 10000;
+      this.controls.mouseSensitivity = s.mouseSens;
+      return `${(raw / 22).toFixed(1)}x`;
+    });
+    wire('rng-fov', 'fov-lbl', (s) => s.fov, (raw, s) => {
+      s.fov = raw;
+      this.engine.setFOV(raw);
+      return `${Math.round(raw)}°`;
+    });
   }
 
   private initQualityControls() {
@@ -452,6 +649,7 @@ class WebteeringApp {
       this.terrain = new Terrain(this.engine.scene, 12345, biome);
       this.controls.setTerrain(this.terrain);
       this.engine.setTerrain(this.terrain);
+      this.wildlife.setTerrain(this.terrain);
       this.terrain.generateTerrainMeshes();
       this.foliage.clear();
       this.foliage.generateFoliage(this.terrain, 12345, biome);
@@ -636,7 +834,11 @@ class WebteeringApp {
     });
 
     // Close scoreboard triggers
+    this.initReplayControls();
+    this.refreshStatsPanel();
+
     btnPodiumClose?.addEventListener('click', () => {
+      this.replay?.pause();
       document.getElementById('podium-screen')?.classList.add('hidden');
       document.getElementById('lobby-screen')?.classList.remove('hidden');
       if (this.activeRoomId) {
@@ -653,30 +855,25 @@ class WebteeringApp {
       }
     });
 
+    // Sandbox world-settings drawer toggle (button was previously unwired)
+    document.getElementById('btn-toggle-options')?.addEventListener('click', () => {
+      document.getElementById('freeplay-drawer')?.classList.toggle('hidden');
+    });
+
     // In-game Exit Race Button trigger
     const btnExitRace = document.getElementById('btn-exit-race');
-    btnExitRace?.addEventListener('click', () => {
-      if (this.isTutorial) {
-        this.exitTutorial();
-      } else if (this.isFreeplay) {
-        this.exitFreeplay();
-      } else if (this.isRelaxed) {
-        this.exitRelaxedMode();
-      } else if (this.activeRoomId) {
-        this.network.leaveRoom();
-        this.activeRoomId = null;
-        this.roomState = null;
-        this.isLocalReady = false;
-        this.elements.clearStaticEntities();
-        this.foliage.clear();
-        
-        document.getElementById('room-active-footer')?.classList.add('hidden');
-        document.getElementById('hud-container')?.classList.add('hidden');
-        document.getElementById('lobby-screen')?.classList.remove('hidden');
-        
-        this.isLobbyActive = true;
-        this.rebuildLobby3D();
-      }
+    btnExitRace?.addEventListener('click', () => this.exitToLobby());
+
+    // ESC pause menu buttons
+    document.getElementById('btn-pause-resume')?.addEventListener('click', () => {
+      this.closePauseMenu(true);
+    });
+    document.getElementById('btn-pause-exit')?.addEventListener('click', () => {
+      this.closePauseMenu(false);
+      this.exitToLobby();
+    });
+    document.getElementById('btn-mobile-pause')?.addEventListener('click', () => {
+      if (this.isRaceActive() && !this.isPaused) this.openPauseMenu();
     });
 
     // In-game Rules & Manual guide toggles (unused but keep reference for safety)
@@ -730,6 +927,12 @@ class WebteeringApp {
     // Multiplayer positions syncs
     this.network.onPositionsUpdate = (players) => {
       this.elements.updateOtherPlayers(players, this.localPlayerId);
+      // Keep live positions for path recording (roomState only refreshes on punches)
+      for (const pid in players) {
+        if (pid === this.localPlayerId) continue;
+        const p = players[pid];
+        this.latestRemotePositions[pid] = { x: p.x, z: p.z };
+      }
     };
 
     this.network.onPlayerPunched = ({ playerId, checkpointIndex, isFinish, roomState }) => {
@@ -743,17 +946,25 @@ class WebteeringApp {
         const elapsed = roomState.scoreboard[playerId].splits[checkpointIndex];
         this.hud.triggerPunchAlert(cp.code, cp.description, elapsed);
       } else {
-        // Play faint beep for others
-        Sound.playTick(false);
+        // Positional SI-station beep from the punched control's location
+        const h = this.terrain ? this.terrain.getTerrainHeight(cp.x, cp.z) : 0;
+        Sound.playPunchAt(cp.x, h + 1.0, cp.z);
       }
 
       // Per-player finish: show YOUR podium the moment you cross, instead of
       // waiting for the slowest runner. The room keeps racing; room-updates
       // keep the podium table live as others finish.
       if (isFinish && isMe) {
+        const sb = roomState.scoreboard[playerId];
+        if (sb) this.recordRunStats('multiplayer', true, sb.elapsed, sb.splits.length);
         this.controls.unlock();
         this.showScoreboardSummary();
       }
+    };
+
+    this.network.onPlayerEmote = ({ playerId, emote }) => {
+      if (playerId === this.localPlayerId) return;
+      this.elements.playEmote(playerId, emote as 'wave' | 'jump' | 'dance');
     };
 
     this.network.onJoinRejected = ({ reason }) => {
@@ -772,6 +983,9 @@ class WebteeringApp {
     document.getElementById('btn-freeplay-start')?.addEventListener('click', () => {
       this.startFreeplayMode();
     });
+
+    // Custom map import (file pickers, drag-drop, example map)
+    this.initCustomMapControls();
   }
 
   // --- WAIT ROOM LOBBY SYNC ---
@@ -816,10 +1030,13 @@ class WebteeringApp {
       this.cleanupLobby3D();
 
       document.getElementById('lobby-screen')?.classList.add('hidden');
-      document.getElementById('hud-container')?.classList.remove('hidden');
+      this.setHudVisible(true);
+      document.getElementById('leaderboard-panel')?.classList.remove('hidden'); // live standings in multiplayer
 
-      // Lock mouse cursor to start racing!
-      this.controls.lock();
+      // Lock mouse cursor to start racing! (not while the pause menu is open)
+      if (!this.isPaused) {
+        this.controls.lock();
+      }
 
       // Start forest wind ambience
       Sound.startWindAmbience();
@@ -887,10 +1104,14 @@ class WebteeringApp {
   }
 
   private reloadTerrainAndCourse(seed: number, course: Checkpoint[], biome: string = 'alpine') {
-    // Reset path recordings
+    // Reset path recordings and solo run progress
     this.playerPaths = {};
     this.pathRecordTimer = 0;
+    this.latestRemotePositions = {};
+    this.freeplayPunchedCps = [];
+    this.localSplits = [];
     this.activeCourse = course;
+    this.activeSeed = seed;
 
     // Dispose old terrain chunk group and materials to prevent leaks & ghost overlays
     if (this.terrain) {
@@ -901,6 +1122,8 @@ class WebteeringApp {
     this.terrain = new Terrain(this.engine.scene, seed, biome);
     this.controls.setTerrain(this.terrain);
     this.engine.setTerrain(this.terrain);
+    this.elements.setTerrain(this.terrain);
+    this.wildlife.setTerrain(this.terrain);
     this.terrain.generateTerrainMeshes();
 
     // Redraw HUD compass/legend once
@@ -925,46 +1148,67 @@ class WebteeringApp {
     this.hud.preRenderStaticMap(this.terrain, course);
   }
 
+  private buildPodiumPlayersMapping(): { [id: string]: { name: string; skinColor: string } } {
+    const playersMapping: { [id: string]: { name: string; skinColor: string } } = {};
+
+    const localId = this.localPlayerId || 'local';
+    const nameInput = document.getElementById('player-name') as HTMLInputElement;
+    const activeColorBtn = document.querySelector('.color-btn.active') as HTMLElement;
+    const localColor = activeColorBtn?.dataset.color || '#ff3333';
+    playersMapping[localId] = {
+      name: nameInput?.value || 'You',
+      skinColor: localColor
+    };
+
+    if (this.roomState) {
+      for (const pid in this.roomState.players) {
+        const p = this.roomState.players[pid];
+        playersMapping[pid] = {
+          name: p.name,
+          skinColor: p.skinColor.split('|')[0]
+        };
+      }
+    }
+    return playersMapping;
+  }
+
   private showScoreboardSummary() {
     if (!this.roomState && !this.isRelaxed) return;
 
+    // A multiplayer race can finish while the local player sits in the menu
+    this.closePauseMenu(false);
+
+    const podiumScreen = document.getElementById('podium-screen');
+    const alreadyOpen = podiumScreen ? !podiumScreen.classList.contains('hidden') : false;
+
     this.controls.unlock();
-    
+
     Sound.stopWindAmbience();
-    
-    document.getElementById('hud-container')?.classList.add('hidden');
+
+    this.setHudVisible(false);
     document.getElementById('stamina-bar-container')?.classList.add('hidden');
     document.getElementById('relaxed-mode-banner')?.classList.add('hidden');
-    document.getElementById('podium-screen')?.classList.remove('hidden');
+    podiumScreen?.classList.remove('hidden');
 
-    // Render post-race paths on podium canvas
+    // Animated route replay over the static topo map (don't restart playback
+    // when room-updates re-trigger the podium while it is already open)
     const canvas = document.getElementById('podium-map-canvas') as HTMLCanvasElement;
-    if (canvas && this.terrain) {
-      const playersMapping: { [id: string]: { name: string; skinColor: string } } = {};
-      
-      // Map local player details
-      const localId = this.localPlayerId || 'local';
-      const nameInput = document.getElementById('player-name') as HTMLInputElement;
-      const activeColorBtn = document.querySelector('.color-btn.active') as HTMLElement;
-      const localColor = activeColorBtn?.dataset.color || '#ff3333';
-      playersMapping[localId] = {
-        name: nameInput?.value || 'You',
-        skinColor: localColor
-      };
+    const playersMapping = this.buildPodiumPlayersMapping();
+    if (canvas && this.terrain && !alreadyOpen) {
+      if (!this.replay) this.replay = new ReplayPlayer(canvas, this.hud.getStaticMapCanvas());
 
-      // Map other runners details
-      if (this.roomState) {
-        for (const pid in this.roomState.players) {
-          const p = this.roomState.players[pid];
-          playersMapping[pid] = {
-            name: p.name,
-            skinColor: p.skinColor.split('|')[0]
-          };
+      const scrubber = document.getElementById('replay-scrubber') as HTMLInputElement;
+      const timeLbl = document.getElementById('replay-time');
+      const playBtn = document.getElementById('btn-replay-play');
+      this.replay.load(this.playerPaths, playersMapping, (cursor, duration, playing) => {
+        if (scrubber) {
+          scrubber.max = String(Math.max(1, Math.round(duration)));
+          scrubber.value = String(Math.round(cursor));
         }
-      }
+        if (timeLbl) timeLbl.textContent = this.hud.formatTime(cursor);
+        if (playBtn) playBtn.textContent = playing ? '❚❚' : '▶';
+      });
 
-      this.hud.drawTracksOnCanvas(canvas, this.playerPaths, playersMapping);
-      
       // Dynamically populate map legend in podium panel
       const legendEl = document.getElementById('podium-map-legend');
       if (legendEl) {
@@ -978,6 +1222,8 @@ class WebteeringApp {
         }
       }
     }
+
+    this.renderSplitsTable(playersMapping);
 
     const tbody = document.getElementById('podium-tbody') as HTMLElement;
     tbody.innerHTML = '';
@@ -1022,6 +1268,369 @@ class WebteeringApp {
     }
   }
 
+  // Leg-by-leg split analysis table (best leg per row highlighted)
+  private renderSplitsTable(playersMapping: { [id: string]: { name: string; skinColor: string } }) {
+    const container = document.getElementById('podium-splits');
+    if (!container) return;
+    container.innerHTML = '';
+
+    // Collect cumulative splits per player
+    const entries: { pid: string; name: string; color: string; splits: number[] }[] = [];
+    if (this.roomState) {
+      for (const pid in this.roomState.scoreboard) {
+        const sb = this.roomState.scoreboard[pid];
+        if (!sb.splits.length) continue;
+        const info = playersMapping[pid] || { name: sb.name, skinColor: '#00ccff' };
+        entries.push({ pid, name: sb.name, color: info.skinColor, splits: sb.splits });
+      }
+    } else if (this.localSplits.length) {
+      const localId = this.localPlayerId || 'local';
+      const info = playersMapping[localId] || { name: 'You', skinColor: '#ffaa00' };
+      entries.push({ pid: localId, name: info.name, color: info.skinColor, splits: this.localSplits });
+    }
+    if (!entries.length) return;
+
+    const legCount = Math.max(...entries.map((e) => e.splits.length));
+    const course = this.roomState?.course || this.activeCourse;
+
+    // Leg labels follow course order for sequential modes; rogaine punch
+    // order differs per player so it gets generic leg numbers
+    const legLabel = (i: number) => {
+      if (this.isRogaine || !course || i >= course.length) return `Leg ${i + 1}`;
+      const from = i === 0 ? 'S' : course[i - 1].code;
+      return `${from} → ${course[i].code}`;
+    };
+
+    const table = document.createElement('table');
+    table.className = 'splits-table';
+    const head = document.createElement('tr');
+    head.innerHTML = `<th>Leg</th>${entries.map((e) =>
+      `<th><span class="legend-dot" style="background:${e.color}; display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px;"></span>${e.name}</th>`
+    ).join('')}`;
+    table.appendChild(head);
+
+    for (let leg = 0; leg < legCount; leg++) {
+      const legTimes = entries.map((e) => {
+        if (leg >= e.splits.length) return null;
+        const prev = leg === 0 ? 0 : e.splits[leg - 1];
+        return e.splits[leg] - prev;
+      });
+      const validTimes = legTimes.filter((t): t is number => t !== null);
+      const best = validTimes.length ? Math.min(...validTimes) : 0;
+
+      const tr = document.createElement('tr');
+      const cells = legTimes.map((t) => {
+        if (t === null) return '<td class="split-cell">—</td>';
+        const isBest = t === best && validTimes.length > 1;
+        return `<td class="split-cell${isBest ? ' best-split' : ''}">${this.hud.formatTime(t)}</td>`;
+      });
+      tr.innerHTML = `<td class="split-leg-label">${legLabel(leg)}</td>${cells.join('')}`;
+      table.appendChild(tr);
+    }
+
+    container.appendChild(table);
+  }
+
+  // Persist a finished/abandoned run into the localStorage stats store
+  private recordRunStats(mode: RunMode, finished: boolean, timeMs: number, punches: number, points?: number) {
+    const localId = this.localPlayerId || 'local';
+    const path = this.playerPaths[localId] || [];
+    let distance = 0;
+    for (let i = 1; i < path.length; i++) {
+      const dx = path[i].x - path[i - 1].x;
+      const dz = path[i].z - path[i - 1].z;
+      distance += Math.sqrt(dx * dx + dz * dz);
+    }
+
+    StatsStore.recordRun({
+      mode,
+      biome: this.activeBiome,
+      seed: this.activeSeed,
+      timeMs,
+      points,
+      distance: Math.round(distance),
+      punches,
+      finished,
+      date: new Date().toISOString()
+    });
+    this.refreshStatsPanel();
+  }
+
+  private refreshStatsPanel() {
+    const stats = StatsStore.load();
+
+    const punchesEl = document.getElementById('stat-punches');
+    if (punchesEl) punchesEl.textContent = String(stats.career.controlsPunched);
+    const runsEl = document.getElementById('stat-runs');
+    if (runsEl) runsEl.textContent = String(stats.career.totalRuns);
+    const distEl = document.getElementById('stat-distance');
+    if (distEl) distEl.textContent = (stats.career.totalDistance / 1000).toFixed(1);
+
+    const modeLabel = (m: string) => m.charAt(0).toUpperCase() + m.slice(1);
+
+    // Personal bests per mode+biome (skip the seed-specific course keys)
+    const pbList = document.getElementById('pb-list');
+    if (pbList) {
+      const keys = Object.keys(stats.bests).filter((k) => k.split('|').length === 2);
+      if (keys.length) {
+        pbList.innerHTML = keys.map((key) => {
+          const [mode, biome] = key.split('|');
+          const best = stats.bests[key];
+          const value = mode === 'rogaine'
+            ? `${best.points ?? 0} pts`
+            : this.hud.formatTime(best.timeMs ?? 0);
+          return `<div class="stats-row"><span>${modeLabel(mode)} · ${modeLabel(biome)}</span><span class="stats-mono">${value}</span></div>`;
+        }).join('');
+      } else {
+        pbList.innerHTML = '<p class="stats-empty">No finished runs yet — get out there!</p>';
+      }
+    }
+
+    const runLog = document.getElementById('run-log-list');
+    if (runLog) {
+      if (stats.runs.length) {
+        runLog.innerHTML = stats.runs.slice(0, 15).map((run) => {
+          const date = new Date(run.date);
+          const dateStr = `${date.getMonth() + 1}/${date.getDate()}`;
+          const result = run.mode === 'rogaine'
+            ? `${run.points ?? 0} pts`
+            : run.finished ? this.hud.formatTime(run.timeMs) : 'DNF';
+          return `<div class="stats-row"><span>${dateStr} · ${modeLabel(run.mode)} · ${modeLabel(run.biome)}</span><span class="stats-mono">${result}</span></div>`;
+        }).join('');
+      } else {
+        runLog.innerHTML = '<p class="stats-empty">Your recent runs will appear here.</p>';
+      }
+    }
+  }
+
+  // One-time bindings for the podium replay transport controls
+  private initReplayControls() {
+    document.getElementById('btn-replay-play')?.addEventListener('click', () => {
+      if (!this.replay) return;
+      if (this.replay.isPlaying()) this.replay.pause();
+      else this.replay.play();
+    });
+
+    const scrubber = document.getElementById('replay-scrubber') as HTMLInputElement;
+    scrubber?.addEventListener('input', () => {
+      this.replay?.pause();
+      this.replay?.seek(parseFloat(scrubber.value));
+    });
+
+    document.querySelectorAll<HTMLButtonElement>('.replay-speed-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const speed = parseFloat(btn.dataset.speed || '4');
+        this.replay?.setSpeed(speed);
+        document.querySelectorAll('.replay-speed-btn').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+      });
+    });
+
+    document.getElementById('btn-export-gpx')?.addEventListener('click', () => {
+      const localId = this.localPlayerId || 'local';
+      const path = this.playerPaths[localId];
+      if (!path || path.length < 2) {
+        Sound.playError();
+        return;
+      }
+      const nameInput = document.getElementById('player-name') as HTMLInputElement;
+      const startEpoch = this.roomState ? this.roomState.startTime : this.relaxedStartTime;
+      exportGpx(path, `Webteering — ${nameInput?.value || 'Runner'}`, startEpoch || Date.now());
+    });
+  }
+
+  // --- GAME MODE: CUSTOM IMPORTED MAP (solo sandbox) ---
+  private initCustomMapControls() {
+    const demInput = document.getElementById('file-dem') as HTMLInputElement;
+    const featInput = document.getElementById('file-features') as HTMLInputElement;
+    const courseInput = document.getElementById('file-course') as HTMLInputElement;
+    const runBtn = document.getElementById('btn-run-custom-map') as HTMLButtonElement;
+    const exampleBtn = document.getElementById('btn-load-example-map');
+    const section = document.getElementById('custom-map-section');
+    if (!demInput || !featInput || !runBtn) return;
+
+    const syncRunEnabled = () => {
+      runBtn.disabled = !(demInput.files?.length && featInput.files?.length);
+    };
+    demInput.addEventListener('change', syncRunEnabled);
+    featInput.addEventListener('change', syncRunEnabled);
+
+    // Drag-and-drop: route files into the right inputs by extension/name
+    if (section) {
+      section.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        section.classList.add('dragging');
+      });
+      section.addEventListener('dragleave', () => section.classList.remove('dragging'));
+      section.addEventListener('drop', (e) => {
+        e.preventDefault();
+        section.classList.remove('dragging');
+        const files = Array.from(e.dataTransfer?.files || []);
+        for (const file of files) {
+          const name = file.name.toLowerCase();
+          const dt = new DataTransfer();
+          dt.items.add(file);
+          if (name.endsWith('.xml')) {
+            courseInput.files = dt.files;
+          } else if (name.includes('feat') || name.includes('terrain') || name.includes('color')) {
+            featInput.files = dt.files;
+          } else if (name.endsWith('.png')) {
+            // Unlabelled PNGs fill DEM first, then features
+            if (!demInput.files?.length) demInput.files = dt.files;
+            else featInput.files = dt.files;
+          }
+        }
+        syncRunEnabled();
+      });
+    }
+
+    runBtn.addEventListener('click', async () => {
+      const demFile = demInput.files?.[0];
+      const featFile = featInput.files?.[0];
+      if (!demFile || !featFile) return;
+
+      const demUrl = URL.createObjectURL(demFile);
+      const featUrl = URL.createObjectURL(featFile);
+      const courseFile = courseInput?.files?.[0];
+      const courseUrl = courseFile ? URL.createObjectURL(courseFile) : undefined;
+      try {
+        await this.importAndStartCustomMap(demUrl, featUrl, courseUrl);
+      } finally {
+        URL.revokeObjectURL(demUrl);
+        URL.revokeObjectURL(featUrl);
+        if (courseUrl) URL.revokeObjectURL(courseUrl);
+      }
+    });
+
+    exampleBtn?.addEventListener('click', () => {
+      this.importAndStartCustomMap('/example-map/dem.png', '/example-map/features.png', '/example-map/course.xml');
+    });
+  }
+
+  private async importAndStartCustomMap(demUrl: string, featUrl: string, courseUrl?: string) {
+    try {
+      const data = await new MapImporter().importMapPackage(demUrl, featUrl, courseUrl);
+
+      if (data.size < 64 || data.size > 512) {
+        throw new Error(`Map must be between 64×64 and 512×512 pixels (got ${data.size}×${data.size}).`);
+      }
+      const minH = Math.min(...data.elevation);
+      const maxH = Math.max(...data.elevation);
+      if (maxH - minH < 2) {
+        showToast('Heads up: the elevation map is nearly flat — check it is a grayscale DEM.', 'error');
+      }
+
+      this.startCustomMapMode(data);
+      showToast(`Custom map loaded (${data.size}×${data.size}, ${data.course.length || 'auto'} controls).`, 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to import the map package.', 'error');
+      Sound.playError();
+    }
+  }
+
+  // Spiral-search using the live Terrain (imported maps have no TerrainCore)
+  private nudgeToRunnableOnTerrain(x: number, z: number): { x: number; z: number } {
+    const waterLevel = this.terrain.getWaterLevel();
+    const ok = (px: number, pz: number) => {
+      const h = this.terrain.getTerrainHeight(px, pz);
+      if (h < waterLevel + 0.6) return false;
+      const t = this.terrain.getTerrainType(px, pz);
+      return t !== 'water' && t !== 'cliff';
+    };
+    if (ok(x, z)) return { x, z };
+    for (let r = 2; r <= 40; r += 2) {
+      for (let a = 0; a < 8; a++) {
+        const px = Math.round(x + Math.cos((a * Math.PI) / 4) * r);
+        const pz = Math.round(z + Math.sin((a * Math.PI) / 4) * r);
+        if (ok(px, pz)) return { x: px, z: pz };
+      }
+    }
+    return { x, z };
+  }
+
+  private startCustomMapMode(data: ImportedMapData) {
+    this.isFreeplay = true;
+    this.isCustomMap = true;
+    this.isTutorial = false;
+    this.isRelaxed = false;
+    this.isRogaine = false;
+    this.controls.isFlightMode = false;
+
+    this.isLobbyActive = false;
+    this.cleanupLobby3D();
+
+    this.rogainePunchedCps = [];
+    this.rogainePoints = 0;
+    this.rogaineEnded = false;
+    this.relaxedStartTime = Date.now();
+
+    // Reset run progress (normally done by reloadTerrainAndCourse, which we
+    // bypass because the terrain comes from imported data, not a seed)
+    this.playerPaths = {};
+    this.pathRecordTimer = 0;
+    this.latestRemotePositions = {};
+    this.freeplayPunchedCps = [];
+    this.localSplits = [];
+    this.activeSeed = 0;
+
+    if (this.terrain) this.terrain.dispose();
+    this.terrain = new Terrain(this.engine.scene, 1, 'alpine');
+    this.controls.setTerrain(this.terrain);
+    this.engine.setTerrain(this.terrain);
+    this.elements.setTerrain(this.terrain);
+    this.wildlife.setTerrain(this.terrain);
+    // loadCustomMap rebuilds the terrain meshes itself
+    this.terrain.loadCustomMap(data.elevation, data.features, data.size);
+
+    this.elements.clearStaticEntities();
+    this.foliage.generateFoliage(this.terrain, 1, 'alpine');
+    this.wildlife.spawnCreatures(35);
+
+    // Course: imported IOF controls, or a fallback ring on runnable ground
+    let course: Checkpoint[];
+    if (data.course.length >= 2) {
+      course = data.course.map((cp) => {
+        const spot = this.nudgeToRunnableOnTerrain(cp.x, cp.z);
+        return { ...cp, x: spot.x, z: spot.z };
+      });
+    } else {
+      const r = Math.max(20, Math.floor(data.size / 4));
+      course = [];
+      for (let i = 0; i < 4; i++) {
+        const angle = (i / 4) * Math.PI * 2;
+        const spot = this.nudgeToRunnableOnTerrain(Math.round(Math.cos(angle) * r), Math.round(Math.sin(angle) * r));
+        course.push({ id: i + 1, code: (31 + i).toString(), x: spot.x, z: spot.z, description: 'Imported map control' });
+      }
+      const fin = this.nudgeToRunnableOnTerrain(0, 10);
+      course.push({ id: 5, code: 'F', x: fin.x, z: fin.z, description: 'Finish banner' });
+    }
+    this.activeCourse = course;
+
+    course.forEach((cp) => {
+      const h = this.terrain.getTerrainHeight(cp.x, cp.z);
+      this.elements.createControlFlag(cp, h);
+    });
+    this.hud.preRenderStaticMap(this.terrain, course);
+    this.hud.updateECard(course, []);
+
+    // HUD/screen state mirrors the regular sandbox flow
+    document.getElementById('score-counter-container')?.classList.add('hidden');
+    document.getElementById('rogaine-timer-container')?.classList.add('hidden');
+    document.getElementById('lobby-screen')?.classList.add('hidden');
+    this.setHudVisible(true);
+    document.getElementById('freeplay-drawer')?.classList.remove('hidden');
+    document.getElementById('btn-toggle-options')?.classList.remove('hidden');
+    document.getElementById('leaderboard-panel')?.classList.add('hidden'); // no standings solo
+
+    Sound.startWindAmbience();
+
+    const spawn = this.nudgeToRunnableOnTerrain(0, 0);
+    const startHeight = this.terrain.getTerrainHeight(spawn.x, spawn.z);
+    this.controls.position.set(spawn.x, startHeight + 1.0, spawn.z);
+
+    this.controls.lock();
+  }
+
   // --- GAME MODE: INTERACTIVE TUTORIAL STATE MACHINE ---
   private startTutorialMode() {
     this.isTutorial = true;
@@ -1046,7 +1655,7 @@ class WebteeringApp {
 
     // Load elements
     document.getElementById('lobby-screen')?.classList.add('hidden');
-    document.getElementById('hud-container')?.classList.remove('hidden');
+    this.setHudVisible(true);
     document.getElementById('tutorial-box')?.classList.remove('hidden');
     
     // Toggle sandbox and multiplayer off
@@ -1149,7 +1758,7 @@ class WebteeringApp {
 
     Sound.stopWindAmbience();
 
-    document.getElementById('hud-container')?.classList.add('hidden');
+    this.setHudVisible(false);
     document.getElementById('stamina-bar-container')?.classList.add('hidden');
     document.getElementById('relaxed-mode-banner')?.classList.add('hidden');
     document.getElementById('tutorial-box')?.classList.add('hidden');
@@ -1163,6 +1772,7 @@ class WebteeringApp {
   // --- GAME MODE: FREEPLAY SANDBOX ---
   private startFreeplayMode() {
     this.isFreeplay = true;
+    this.isCustomMap = false;
     this.isTutorial = false;
     this.controls.isFlightMode = false;
 
@@ -1201,9 +1811,10 @@ class WebteeringApp {
     }
 
     document.getElementById('lobby-screen')?.classList.add('hidden');
-    document.getElementById('hud-container')?.classList.remove('hidden');
+    this.setHudVisible(true);
     document.getElementById('freeplay-drawer')?.classList.remove('hidden');
     document.getElementById('btn-toggle-options')?.classList.remove('hidden');
+    document.getElementById('leaderboard-panel')?.classList.add('hidden'); // no standings solo
 
     this.reloadTerrainAndCourse(seed, course, this.activeBiome);
     this.hud.updateECard(course, []);
@@ -1238,6 +1849,7 @@ class WebteeringApp {
     if (selGameModeOpt) {
       selGameModeOpt.value = this.isRogaine ? 'rogaine' : 'classic';
       selGameModeOpt.onchange = () => {
+        if (this.isCustomMap) return; // imported terrain has no seeded course to rebuild
         this.isRogaine = (selGameModeOpt.value === 'rogaine');
         this.rogainePunchedCps = [];
         this.rogainePoints = 0;
@@ -1277,6 +1889,7 @@ class WebteeringApp {
     if (selBiome) {
       selBiome.value = this.activeBiome;
       selBiome.onchange = () => {
+        if (this.isCustomMap) return; // imported terrain ignores biome regeneration
         this.activeBiome = selBiome.value;
         this.reloadTerrainAndCourse(seed, course, this.activeBiome);
         const startHeight = this.terrain.getTerrainHeight(0, 0);
@@ -1326,6 +1939,7 @@ class WebteeringApp {
 
   private exitFreeplay() {
     this.isFreeplay = false;
+    this.isCustomMap = false;
     this.controls.unlock();
 
     this.mapDisplayMode = '2d';
@@ -1350,7 +1964,7 @@ class WebteeringApp {
 
     Sound.stopWindAmbience();
 
-    document.getElementById('hud-container')?.classList.add('hidden');
+    this.setHudVisible(false);
     document.getElementById('stamina-bar-container')?.classList.add('hidden');
     document.getElementById('relaxed-mode-banner')?.classList.add('hidden');
     document.getElementById('score-counter-container')?.classList.add('hidden');
@@ -1394,7 +2008,7 @@ class WebteeringApp {
 
     // 3. Clear lobby & load wilderness
     document.getElementById('lobby-screen')?.classList.add('hidden');
-    document.getElementById('hud-container')?.classList.remove('hidden');
+    this.setHudVisible(true);
     document.getElementById('relaxed-mode-banner')?.classList.remove('hidden');
     document.getElementById('leaderboard-panel')?.classList.add('hidden');
 
@@ -1420,7 +2034,7 @@ class WebteeringApp {
     this.elements.clearStaticEntities();
     this.foliage.clear();
 
-    document.getElementById('hud-container')?.classList.add('hidden');
+    this.setHudVisible(false);
     document.getElementById('stamina-bar-container')?.classList.add('hidden');
     document.getElementById('relaxed-mode-banner')?.classList.add('hidden');
     document.getElementById('leaderboard-panel')?.classList.remove('hidden');
@@ -1520,29 +2134,34 @@ class WebteeringApp {
       ? Date.now() 
       : this.network.getServerTime();
 
-    // 1. Update player physics/positions
-    this.controls.update(delta);
+    // 1. Update player physics/positions (frozen while the pause menu is open)
+    if (!this.isPaused) {
+      this.controls.update(delta);
+    }
 
     // Record player paths for post-race analysis
-    const isRacingState = (this.activeRoomId && this.roomState && this.roomState.status === 'racing') || this.isFreeplay || this.isTutorial;
+    const isRacingState = !this.isPaused &&
+      ((this.activeRoomId && this.roomState && this.roomState.status === 'racing') || this.isFreeplay || this.isTutorial);
     if (isRacingState) {
       this.pathRecordTimer += delta;
       if (this.pathRecordTimer >= 0.25) { // record every 250ms
         this.pathRecordTimer = 0;
-        
+
+        // Sample timestamp relative to race start (shared server timeline in multiplayer)
+        const t = (this.activeRoomId && this.roomState)
+          ? Math.max(0, this.network.getServerTime() - this.roomState.startTime)
+          : Math.max(0, Date.now() - this.relaxedStartTime);
+
         // Local player path
         const localId = this.localPlayerId || 'local';
         if (!this.playerPaths[localId]) this.playerPaths[localId] = [];
-        this.playerPaths[localId].push({ x: this.controls.position.x, z: this.controls.position.z });
+        this.playerPaths[localId].push({ x: this.controls.position.x, z: this.controls.position.z, t });
 
-        // Other players paths
-        if (this.roomState) {
-          for (const pid in this.roomState.players) {
-            if (pid === this.localPlayerId) continue;
-            const other = this.roomState.players[pid];
-            if (!this.playerPaths[pid]) this.playerPaths[pid] = [];
-            this.playerPaths[pid].push({ x: other.x, z: other.z });
-          }
+        // Other players paths (live positions, not the punch-stale roomState)
+        for (const pid in this.latestRemotePositions) {
+          const other = this.latestRemotePositions[pid];
+          if (!this.playerPaths[pid]) this.playerPaths[pid] = [];
+          this.playerPaths[pid].push({ x: other.x, z: other.z, t });
         }
       }
     }
@@ -1608,6 +2227,25 @@ class WebteeringApp {
     // 3. Interpolate other runners meshes and flag rotations
     this.elements.update(delta);
 
+    // Keep the spatial-audio listener glued to the camera
+    this.scratchListenerFwd.set(0, 0, -1).applyQuaternion(this.engine.camera.quaternion);
+    this.scratchListenerUp.set(0, 1, 0).applyQuaternion(this.engine.camera.quaternion);
+    const camPos = this.engine.camera.position;
+    Sound.updateListener(
+      camPos.x, camPos.y, camPos.z,
+      this.scratchListenerFwd.x, this.scratchListenerFwd.y, this.scratchListenerFwd.z,
+      this.scratchListenerUp.x, this.scratchListenerUp.y, this.scratchListenerUp.z
+    );
+
+    // Emote trigger (B key) — broadcast the lobby-selected emote to the room
+    if (this.keysPressed['KeyB'] && !this.isPaused) {
+      this.keysPressed['KeyB'] = false;
+      if (this.activeRoomId) {
+        const selEmote = document.getElementById('sel-lobby-emote') as HTMLSelectElement;
+        this.network.sendEmote(selEmote?.value || 'wave');
+      }
+    }
+
     // Animate instanced foliage swaying and water surface ripples
     const time = Date.now() * 0.001;
     this.foliage.update(time, this.controls.position);
@@ -1652,14 +2290,14 @@ class WebteeringApp {
     }
 
     // Manual Bezel Rotation key hooks ([ / ])
-    if (this.keysPressed['BracketLeft']) {
+    if (this.keysPressed['BracketLeft'] && !this.isPaused) {
       this.hud.bezelAngle -= 1.8 * delta;
       this.bezelClickTimer -= delta;
       if (this.bezelClickTimer <= 0) {
         Sound.playDialClick();
         this.bezelClickTimer = 0.07;
       }
-    } else if (this.keysPressed['BracketRight']) {
+    } else if (this.keysPressed['BracketRight'] && !this.isPaused) {
       this.hud.bezelAngle += 1.8 * delta;
       this.bezelClickTimer -= delta;
       if (this.bezelClickTimer <= 0) {
@@ -1679,7 +2317,7 @@ class WebteeringApp {
     }
 
     // Manual Map Rotation Q/R key hooks
-    if (this.hud.mapMode === 'manual') {
+    if (this.hud.mapMode === 'manual' && !this.isPaused) {
       if (this.keysPressed['KeyQ']) {
         this.hud.manualMapAngle -= 1.8 * delta;
       }
@@ -1747,12 +2385,16 @@ class WebteeringApp {
     this.hud.drawCompassStrip(yaw);
 
     // 5. Proximity triggers (Checkpoint punches range verification)
-    this.evaluateCheckpointProximity();
+    if (!this.isPaused) {
+      this.evaluateCheckpointProximity();
+    } else {
+      this.hud.hideActionPrompt();
+    }
 
     // 6. Manage race clock ticks and scoreboard sorting
     if (this.roomState) {
       this.hud.updateTimers(this.roomState.status, this.roomState.startTime, serverTime);
-      this.hud.updateLeaderboard(this.roomState.scoreboard, this.localPlayerId);
+      this.hud.updateLeaderboard(this.roomState.scoreboard, this.localPlayerId, this.roomState.players);
     } else if (this.isRelaxed) {
       this.hud.updateTimers('racing', this.relaxedStartTime, serverTime);
     } else if (this.isFreeplay) {
@@ -1810,7 +2452,7 @@ class WebteeringApp {
       punchedCps = Array.from({ length: this.tutorialStep - 4 }, (_, i) => i);
     } else if (this.isFreeplay) {
       activeCourse = this.activeCourse;
-      punchedCps = this.isRogaine ? this.rogainePunchedCps : [];
+      punchedCps = this.isRogaine ? this.rogainePunchedCps : this.freeplayPunchedCps;
     } else if (this.isRelaxed) {
       activeCourse = this.activeCourse;
       punchedCps = this.relaxedPunchedCps;
@@ -1927,6 +2569,7 @@ class WebteeringApp {
         if (this.rogaineEnded) return; // run is over: no more scoring
         if (this.rogainePunchedCps.includes(index)) return;
         this.rogainePunchedCps.push(index);
+        this.localSplits.push(Date.now() - this.relaxedStartTime);
         this.hud.updateECard(this.activeCourse, this.rogainePunchedCps);
 
         const cp = this.activeCourse[index];
@@ -1949,14 +2592,28 @@ class WebteeringApp {
           this.hud.triggerPunchAlert(cp.code, cp.description, Date.now() - this.relaxedStartTime);
         }
       } else {
-        // Classic sequential freeplay
+        // Classic sequential freeplay: real progression (was previously a bare sound)
+        if (this.freeplayPunchedCps.includes(index)) return;
         Sound.playPunch();
+        this.freeplayPunchedCps.push(index);
+        this.localSplits.push(Date.now() - this.relaxedStartTime);
+        this.hud.updateECard(this.activeCourse, this.freeplayPunchedCps);
+
+        const cp = this.activeCourse[index];
+        this.elements.flashFlagGreen(cp.id);
+        this.hud.triggerPunchAlert(cp.code, cp.description, Date.now() - this.relaxedStartTime);
+
+        if (index === this.activeCourse.length - 1) {
+          this.finishFreeplayRun();
+        }
       }
     } else if (this.isRelaxed) {
       Sound.playPunch();
       this.relaxedPunchedCps.push(0);
+      this.localSplits.push(Date.now() - this.relaxedStartTime);
       this.hud.updateECard(this.activeCourse, this.relaxedPunchedCps);
       this.hud.triggerPunchAlert('99', 'Hidden Search Feature', Date.now() - this.relaxedStartTime);
+      this.recordRunStats('relaxed', true, Date.now() - this.relaxedStartTime, 1);
       this.controls.unlock();
       setTimeout(() => {
         this.showScoreboardSummary();
@@ -1985,6 +2642,7 @@ class WebteeringApp {
     }
 
     this.controls.unlock();
+    this.recordRunStats('rogaine', true, Date.now() - this.relaxedStartTime, this.rogainePunchedCps.length, this.rogainePoints);
 
     // Generate a fake multiplayer scoreboard entry to show on podium screen
     this.roomState = {
@@ -2014,7 +2672,51 @@ class WebteeringApp {
           name: 'Runner (You)',
           finished: true,
           elapsed: Date.now() - this.relaxedStartTime,
-          splits: this.rogainePunchedCps.map(() => Date.now() - this.relaxedStartTime) // mock splits
+          splits: this.localSplits.slice()
+        }
+      }
+    };
+
+    setTimeout(() => {
+      this.showScoreboardSummary();
+    }, 1200);
+  }
+
+  // Ends a classic sequential sandbox run: builds the same solo scoreboard
+  // shape the rogaine finish uses so the podium/replay path is shared.
+  private finishFreeplayRun() {
+    this.controls.unlock();
+    const elapsed = Date.now() - this.relaxedStartTime;
+    this.recordRunStats(this.isCustomMap ? 'custom' : 'classic', true, elapsed, this.freeplayPunchedCps.length);
+
+    this.roomState = {
+      id: 'freeplay',
+      name: 'Sandbox Classic',
+      players: {
+        local: {
+          id: 'local',
+          name: 'Runner (You)',
+          x: this.controls.position.x,
+          y: this.controls.position.y,
+          z: this.controls.position.z,
+          rx: 0,
+          ry: 0,
+          anim: 'idle',
+          skinColor: '#ffaa00',
+          punchedCheckpoints: this.freeplayPunchedCps
+        }
+      },
+      status: 'finished',
+      mapSeed: 123,
+      startTime: this.relaxedStartTime,
+      course: this.activeCourse,
+      scoreboard: {
+        local: {
+          id: 'local',
+          name: 'Runner (You)',
+          finished: true,
+          elapsed,
+          splits: this.localSplits.slice()
         }
       }
     };
@@ -2232,7 +2934,7 @@ class WebteeringApp {
       if (this.isRelaxed) {
         punched = this.relaxedPunchedCps || [];
       } else if (this.isFreeplay) {
-        punched = [];
+        punched = this.isRogaine ? this.rogainePunchedCps : this.freeplayPunchedCps;
       } else {
         punched = this.rogainePunchedCps || [];
       }
