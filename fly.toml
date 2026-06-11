@@ -1,0 +1,20 @@
+# Fly.io app config for Webteering.
+# NOTE: rooms live in server memory — keep this app on a SINGLE machine.
+app = "webteering"
+primary_region = "ams"
+
+[build]
+
+[env]
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

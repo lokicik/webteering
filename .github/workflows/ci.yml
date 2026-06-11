@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          npm ci --prefix server
+          npm ci --prefix client
+
+      # Both build scripts run tsc, so this is also the typecheck
+      - name: Build server
+        run: npm run build --prefix server
+
+      - name: Build client
+        run: npm run build --prefix client
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build container image
+        run: docker build -t webteering .
