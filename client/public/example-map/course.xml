@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CourseData>
+  <Control>
+    <Id>31</Id>
+    <MapPosition x="44" y="44" />
+    <Description>Hill, top</Description>
+  </Control>
+  <Control>
+    <Id>32</Id>
+    <MapPosition x="40" y="78" />
+    <Description>Field, North-East corner</Description>
+  </Control>
+  <Control>
+    <Id>33</Id>
+    <MapPosition x="90" y="88" />
+    <Description>Thicket, West edge</Description>
+  </Control>
+  <Control>
+    <Id>F</Id>
+    <MapPosition x="64" y="74" />
+    <Description>Finish banner</Description>
+  </Control>
+</CourseData>

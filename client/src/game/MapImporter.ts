@@ -1,6 +1,6 @@
 import { Checkpoint, VoxelType } from '../sharedTypes';
 
-interface ImportedMapData {
+export interface ImportedMapData {
   elevation: number[];
   features: VoxelType[];
   course: Checkpoint[];
@@ -90,6 +90,24 @@ export class MapImporter {
     return checkpoints;
   }
 
+  // One-pass edge-clamped 3x3 box blur over the elevation grid
+  private blurElevation(data: number[], size: number) {
+    const src = data.slice();
+    for (let z = 0; z < size; z++) {
+      for (let x = 0; x < size; x++) {
+        let sum = 0;
+        for (let dz = -1; dz <= 1; dz++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const sx = Math.min(size - 1, Math.max(0, x + dx));
+            const sz = Math.min(size - 1, Math.max(0, z + dz));
+            sum += src[sz * size + sx];
+          }
+        }
+        data[z * size + x] = sum / 9;
+      }
+    }
+  }
+
   // Full import engine. Combines loaded files into compiled dataset
   public async importMapPackage(
     elevationImgUrl: string,
@@ -133,9 +151,11 @@ export class MapImporter {
     for (let i = 0; i < size * size; i++) {
       const idx = i * 4;
       
-      // Gray level (red channel is sufficient for grayscale)
+      // Gray level (red channel is sufficient for grayscale).
+      // Float heights — integer rounding terraced imported maps into 1m
+      // steps that the shoreline foam traced as a jagged staircase.
       const gray = elevationPixels[idx];
-      elevation[i] = Math.max(1, Math.round(gray * heightScale));
+      elevation[i] = Math.max(1, gray * heightScale);
 
       // RGB feature standardizer
       const r = featurePixels[idx];
@@ -143,6 +163,9 @@ export class MapImporter {
       const b = featurePixels[idx + 2];
       features[i] = this.getClosestVoxelType(r, g, b);
     }
+
+    // Soften single-pixel DEM noise (features keep their hard edges)
+    this.blurElevation(elevation, size);
 
     // 3. Load XML course data
     let course: Checkpoint[] = [];
