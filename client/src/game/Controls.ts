@@ -428,7 +428,14 @@ export class Controls {
 
     // --- 4. STEP CLIMB & COLLISION VERIFICATION ---
     // Split X and Z axis movements to allow smooth sliding along walls and trees!
-    
+
+    // Ground-align BEFORE the step tests so heightDiffX/Z measure true step
+    // height from the actual current floor, not last frame's snapped height
+    // (removes the 1-frame float/false-cliff on ramps)
+    if (this.isGrounded) {
+      this.position.y = this.terrain.getTerrainHeight(this.position.x, this.position.z);
+    }
+
     // 4a. X-Axis Movement and Collision (climb steps up to 0.65m smoothly)
     const nextPosX = this.position.x + this.velocity.x * delta;
     const targetFloorHeightX = this.terrain.getTerrainHeight(nextPosX, this.position.z);

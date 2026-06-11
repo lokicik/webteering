@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 import { Sound } from '../ui/Sound';
+import { SkySystem, TimePreset } from './SkySystem';
+import { PostFX } from './PostFX';
+import { QualitySettings, QUALITY_PRESETS, loadQualityLevel } from './Quality';
 
 export interface Updatable {
   update(delta: number): void;
@@ -14,8 +17,12 @@ export class Engine {
   private container: HTMLElement;
   
   // Lights
-  private ambientLight!: THREE.AmbientLight;
+  private ambientLight!: THREE.HemisphereLight;
   private sunLight!: THREE.DirectionalLight;
+  public skySystem!: SkySystem;
+  public postFX!: PostFX;
+  // Escape hatch: localStorage.setItem('webteering.postfx', 'off') falls back to plain rendering
+  private postFXEnabled = localStorage.getItem('webteering.postfx') !== 'off';
 
   // Weather Realism systems
   private rainActive = false;
@@ -26,10 +33,18 @@ export class Engine {
   private terrain: any = null;
 
   private cloudsGroup = new THREE.Group();
+  private cloudMaterial: THREE.SpriteMaterial | null = null;
 
   public setTerrain(terrain: any) {
     this.terrain = terrain;
   }
+
+  // Shadow frustum follows the player; snapped to shadow-map texels to avoid shimmer
+  private readonly shadowCamHalfSize = 80;
+  private currentLightDir = new THREE.Vector3(0.5, 0.8, 0.3).normalize();
+  private shadowRight = new THREE.Vector3();
+  private shadowUp = new THREE.Vector3();
+  private shadowCenter = new THREE.Vector3();
 
   private lightningIntensity = 0.0;
   private lightningChance = 0.0018; // probability per frame
@@ -47,6 +62,29 @@ export class Engine {
     this.initLights();
     this.initRenderer();
     this.initResize();
+
+    this.skySystem = new SkySystem(this.scene, this.renderer);
+    this.skySystem.setPreset('noon');
+
+    this.postFX = new PostFX(this.renderer, this.scene, this.camera, this.sunLight);
+    this.postFX.setTimeOfDay('noon');
+
+    this.applyQuality(QUALITY_PRESETS[loadQualityLevel()]);
+  }
+
+  // Apply resolution / AO / god rays / shadow quality. Live-safe at runtime.
+  public applyQuality(settings: QualitySettings) {
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, settings.pixelRatioCap));
+    this.postFX?.setSize(window.innerWidth, window.innerHeight);
+
+    if (this.sunLight.shadow.mapSize.width !== settings.shadowMapSize) {
+      this.sunLight.shadow.mapSize.set(settings.shadowMapSize, settings.shadowMapSize);
+      // Force shadow map reallocation at the new resolution
+      this.sunLight.shadow.map?.dispose();
+      (this.sunLight.shadow as any).map = null;
+    }
+
+    this.postFX?.applyQuality(settings);
   }
 
   private initScene() {
@@ -72,39 +110,47 @@ export class Engine {
   }
 
   private initLights() {
-    // Soft ambient lighting (prevents pitch black voxel faces)
-    this.ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    // Hemisphere sky/ground bounce light (sky blue from above, dark forest-floor bounce below)
+    this.ambientLight = new THREE.HemisphereLight(0xbdd7ff, 0x3a4a2a, 0.55);
     this.scene.add(this.ambientLight);
 
     // Directional Sun Light casting beautiful crisp voxel shadows
-    this.sunLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    this.sunLight = new THREE.DirectionalLight(0xfff4e0, 3.0);
     this.sunLight.position.set(50, 100, 30);
     this.sunLight.castShadow = true;
     
     // Configure shadow details for performance and crisp voxel edges
-    this.sunLight.shadow.mapSize.width = 1024;
-    this.sunLight.shadow.mapSize.height = 1024;
+    this.sunLight.shadow.mapSize.width = 2048;
+    this.sunLight.shadow.mapSize.height = 2048;
     this.sunLight.shadow.camera.near = 0.5;
     this.sunLight.shadow.camera.far = 300;
-    
-    // Orthographic shadow camera bounds to fit active navigation view
-    const d = 120;
+
+    // Tight ortho bounds (~8cm/texel at 2048); the frustum follows the player each frame
+    const d = this.shadowCamHalfSize;
     this.sunLight.shadow.camera.left = -d;
     this.sunLight.shadow.camera.right = d;
     this.sunLight.shadow.camera.top = d;
     this.sunLight.shadow.camera.bottom = -d;
     this.sunLight.shadow.bias = -0.0005;
+    this.sunLight.shadow.normalBias = 0.02;
 
     this.scene.add(this.sunLight);
+    this.scene.add(this.sunLight.target); // target must be in the scene for its matrix to update
     
     // Update ambient base background
     this.scene.background = new THREE.Color(0x0c0f18);
   }
 
   private initRenderer() {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: false, // SMAA in the post chain handles AA
+      stencil: false,
+      powerPreference: 'high-performance'
+    });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Cap at 2 for performance
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.1;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     
@@ -117,6 +163,7 @@ export class Engine {
       this.camera.aspect = window.innerWidth / window.innerHeight;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(window.innerWidth, window.innerHeight);
+      this.postFX?.setSize(window.innerWidth, window.innerHeight);
     });
   }
 
@@ -132,55 +179,71 @@ export class Engine {
   }
 
   // Set active lighting and sky colors based on Time of Day
-  public setTimeOfDay(time: 'noon' | 'sunset' | 'night', customFogDensity?: number) {
+  public setTimeOfDay(time: TimePreset, customFogDensity?: number) {
     const fog = this.scene.fog as THREE.FogExp2;
-    const fogPercent = customFogDensity !== undefined ? customFogDensity / 1000 : 0.015;
+    // Clearer base than before: navigation sightlines matter; god rays + the
+    // per-preset boosts below supply the atmospheric depth
+    const fogPercent = customFogDensity !== undefined ? customFogDensity / 1000 : 0.008;
 
     switch (time) {
       case 'noon':
-        this.scene.background = new THREE.Color(0x7ec0ee); // Sunny Blue Sky
-        this.ambientLight.color.setHex(0xffffff);
-        this.ambientLight.intensity = 0.7;
-        
-        this.sunLight.color.setHex(0xfffaed);
-        this.sunLight.intensity = 0.9;
-        this.sunLight.position.set(50, 100, 30);
-        
+        this.ambientLight.color.setHex(0xbdd7ff);
+        this.ambientLight.groundColor.setHex(0x3a4a2a);
+        this.ambientLight.intensity = 0.45;
+
+        this.sunLight.color.setHex(0xfff4e0);
+        this.sunLight.intensity = 2.6;
+        this.renderer.toneMappingExposure = 1.1;
+        this.cloudMaterial?.color.setHex(0xffffff);
+
         if (fog) {
-          fog.color.setHex(0x7ec0ee);
           fog.density = fogPercent;
         }
         break;
 
       case 'sunset':
-        this.scene.background = new THREE.Color(0xfd5e53); // Orange Sunset
-        this.ambientLight.color.setHex(0xffaaaa);
-        this.ambientLight.intensity = 0.45;
-        
-        this.sunLight.color.setHex(0xffaa44);
-        this.sunLight.intensity = 0.75;
-        this.sunLight.position.set(80, 25, 10);
-        
+        this.ambientLight.color.setHex(0xcc6644);
+        this.ambientLight.groundColor.setHex(0x33281e);
+        this.ambientLight.intensity = 0.35;
+
+        this.sunLight.color.setHex(0xff7733);
+        this.sunLight.intensity = 2.2;
+        this.renderer.toneMappingExposure = 1.0;
+        this.cloudMaterial?.color.setHex(0xffb380);
+
         if (fog) {
-          fog.color.setHex(0xfd5e53);
-          fog.density = fogPercent + 0.005; // slightly mistier at sunset
+          fog.density = fogPercent + 0.010; // mistier at sunset
         }
         break;
 
       case 'night':
-        this.scene.background = new THREE.Color(0x020408); // Pitch Black Sky
-        this.ambientLight.color.setHex(0x334466);
-        this.ambientLight.intensity = 0.15; // Ambient moonlight only
-        
-        this.sunLight.color.setHex(0x8899bb);
-        this.sunLight.intensity = 0.25; // Moon casting faint shadows
-        this.sunLight.position.set(-30, 80, -20);
-        
+        this.ambientLight.color.setHex(0x223355);
+        this.ambientLight.groundColor.setHex(0x0a0d14);
+        this.ambientLight.intensity = 0.12;
+
+        this.sunLight.color.setHex(0x7788bb);
+        this.sunLight.intensity = 0.5; // Moon casting faint shadows
+        this.renderer.toneMappingExposure = 0.9;
+        this.cloudMaterial?.color.setHex(0x222833);
+
         if (fog) {
-          fog.color.setHex(0x020408);
           fog.density = fogPercent + 0.02; // dark heavy night fog
         }
         break;
+    }
+
+    // Sky dome, IBL environment, and the authoritative light direction.
+    // Sky disc, shadows, fog tint and god rays all derive from here.
+    this.skySystem.setPreset(time);
+    this.postFX?.setTimeOfDay(time);
+    const lightDir = this.skySystem.getLightDirection();
+    this.currentLightDir.copy(lightDir);
+    this.sunLight.position.copy(lightDir).multiplyScalar(150);
+
+    const horizon = SkySystem.HORIZON[time];
+    this.scene.background = new THREE.Color(horizon); // hidden behind sky dome; lightning fallback
+    if (fog) {
+      fog.color.setHex(horizon);
     }
 
     // Cache weather bases
@@ -194,8 +257,10 @@ export class Engine {
   public setFogDensity(percentage: number) {
     const fog = this.scene.fog as THREE.FogExp2;
     if (fog) {
-      // Map 0-100 percentage to 0.002 (clear) - 0.08 (blinding fog)
-      fog.density = 0.002 + (percentage / 100) * 0.078;
+      // Quadratic curve: low slider values stay sunny-clear (15% -> ~0.0047),
+      // high values still reach blinding fog (100% -> 0.078)
+      const t = percentage / 100;
+      fog.density = 0.003 + t * t * 0.075;
     }
   }
 
@@ -375,8 +440,8 @@ export class Engine {
           }
           
           const flashVal = this.lightningIntensity;
-          this.ambientLight.intensity = this.baseAmbientIntensity + flashVal * 2.8;
-          this.sunLight.intensity = this.baseSunIntensity + flashVal * 2.5;
+          this.ambientLight.intensity = this.baseAmbientIntensity * (1 + flashVal * 4.0);
+          this.sunLight.intensity = this.baseSunIntensity * (1 + flashVal * 3.0);
           
           const skyColor = new THREE.Color().lerpColors(this.baseBgColor, new THREE.Color(0xffffff), flashVal * 0.85);
           this.scene.background = skyColor;
@@ -421,50 +486,70 @@ export class Engine {
       // Animate low-poly sky clouds
       this.updateClouds(delta);
 
-      this.renderer.render(this.scene, this.camera);
+      // Keep the tight shadow frustum centered on the player
+      this.updateShadowFrustum();
+
+      if (this.postFXEnabled && this.postFX) {
+        this.postFX.render(delta);
+      } else {
+        this.renderer.render(this.scene, this.camera);
+      }
     };
 
     animate();
   }
 
+  // Soft puffy cloud texture: clustered radial-gradient blobs on transparent canvas
+  private createCloudTexture(): THREE.CanvasTexture {
+    const size = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d')!;
+
+    const puffCount = 14;
+    for (let i = 0; i < puffCount; i++) {
+      // Cluster puffs in a horizontal ellipse, flatter at the bottom
+      const angle = Math.random() * Math.PI * 2;
+      const px = size / 2 + Math.cos(angle) * Math.random() * size * 0.28;
+      const py = size / 2 + Math.sin(angle) * Math.random() * size * 0.12;
+      const radius = size * (0.10 + Math.random() * 0.14);
+
+      const grad = ctx.createRadialGradient(px, py, 0, px, py, radius);
+      grad.addColorStop(0, 'rgba(255, 255, 255, 0.55)');
+      grad.addColorStop(0.6, 'rgba(255, 255, 255, 0.22)');
+      grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, size, size);
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
+  }
+
   private initClouds() {
     this.scene.add(this.cloudsGroup);
-    
-    // Spawn 10 procedural low-poly voxel clouds
-    const cloudMat = new THREE.MeshLambertMaterial({
-      color: 0xffffff,
+
+    this.cloudMaterial = new THREE.SpriteMaterial({
+      map: this.createCloudTexture(),
       transparent: true,
-      opacity: 0.88,
-      shadowSide: THREE.DoubleSide
+      opacity: 0.6,
+      depthWrite: false,
+      fog: true
     });
 
-    const cloudCount = 10;
+    const cloudCount = 12;
     for (let c = 0; c < cloudCount; c++) {
-      const cloud = new THREE.Group();
-      
-      // Assemble intersecting boxes for fluffy low-poly look
-      const boxesCount = 3 + Math.floor(Math.random() * 4);
-      for (let b = 0; b < boxesCount; b++) {
-        const w = 8 + Math.random() * 12;
-        const h = 4 + Math.random() * 4;
-        const d = 6 + Math.random() * 8;
-        
-        const box = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), cloudMat);
-        box.position.set(
-          (Math.random() - 0.5) * 6,
-          (Math.random() - 0.5) * 2,
-          (Math.random() - 0.5) * 6
-        );
-        box.castShadow = true;
-        cloud.add(box);
-      }
+      const cloud = new THREE.Sprite(this.cloudMaterial);
 
-      // Random position in sky
       const cx = (Math.random() - 0.5) * 350;
-      const cy = 40 + Math.random() * 10;
+      // High enough that sandbox Flight Mode doesn't fly into an opaque sprite
+      const cy = 160 + Math.random() * 60;
       const cz = (Math.random() - 0.5) * 350;
       cloud.position.set(cx, cy, cz);
-      
+      cloud.scale.set(45 + Math.random() * 35, 18 + Math.random() * 14, 1);
+
       // Store drift velocity
       cloud.userData = {
         vx: 0.8 + Math.random() * 1.5,
@@ -473,6 +558,33 @@ export class Engine {
 
       this.cloudsGroup.add(cloud);
     }
+  }
+
+  // Re-center the sun's shadow camera on the player, snapping its position to
+  // whole shadow-map texels (in light space) so shadow edges don't crawl while moving
+  private updateShadowFrustum() {
+    const lightDir = this.currentLightDir;
+    const texel = (2 * this.shadowCamHalfSize) / this.sunLight.shadow.mapSize.width;
+
+    // Orthonormal basis perpendicular to the light direction
+    const upRef = Math.abs(lightDir.y) > 0.99 ? 1 : 0;
+    this.shadowUp.set(upRef, 1 - upRef, 0);
+    this.shadowRight.crossVectors(this.shadowUp, lightDir).normalize();
+    this.shadowUp.crossVectors(lightDir, this.shadowRight);
+
+    const p = this.camera.position;
+    const rx = Math.floor(p.dot(this.shadowRight) / texel) * texel;
+    const uy = Math.floor(p.dot(this.shadowUp) / texel) * texel;
+    const ld = p.dot(lightDir); // along-axis offset needs no snapping
+
+    this.shadowCenter
+      .set(0, 0, 0)
+      .addScaledVector(this.shadowRight, rx)
+      .addScaledVector(this.shadowUp, uy)
+      .addScaledVector(lightDir, ld);
+
+    this.sunLight.target.position.copy(this.shadowCenter);
+    this.sunLight.position.copy(this.shadowCenter).addScaledVector(lightDir, 150);
   }
 
   private updateClouds(delta: number) {

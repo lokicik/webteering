@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { QualityLevel, QUALITY_PRESETS, loadQualityLevel, saveQualityLevel } from './game/Quality';
 import { Engine } from './game/Engine';
 import { Terrain } from './game/Terrain';
 import { Controls } from './game/Controls';
@@ -121,8 +122,26 @@ class WebteeringApp {
     // Build the rotating player model on landing
     this.rebuildLobby3D();
 
+    // Hook graphics quality selectors (lobby + in-game panels stay in sync)
+    this.initQualityControls();
+
     // 6. Start the engine loop
     this.engine.start();
+  }
+
+  private initQualityControls() {
+    const selects = document.querySelectorAll<HTMLSelectElement>('select.sel-quality');
+    const level = loadQualityLevel();
+    selects.forEach((sel) => {
+      sel.value = level;
+      sel.onchange = () => {
+        const lvl = sel.value as QualityLevel;
+        saveQualityLevel(lvl);
+        selects.forEach((other) => { other.value = lvl; });
+        this.engine.applyQuality(QUALITY_PRESETS[lvl]);
+        this.foliage.applyQuality(QUALITY_PRESETS[lvl]);
+      };
+    });
   }
 
   private getCustomizationString(): string {
@@ -1924,7 +1943,8 @@ class WebteeringApp {
     const mapMat = new THREE.MeshBasicMaterial({
       side: THREE.DoubleSide,
       transparent: true,
-      depthWrite: false
+      depthWrite: false,
+      toneMapped: false // keep exact IOF map colors under filmic tone mapping
     });
     
     // Canvas texture linked to active map HUD canvas
@@ -1971,7 +1991,7 @@ class WebteeringApp {
 
     // Yellow orienting arrow on bezel
     const indicatorGeom = new THREE.BoxGeometry(0.004, 0.002, 0.024);
-    const indicatorMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
+    const indicatorMat = new THREE.MeshBasicMaterial({ color: 0xffaa00, toneMapped: false });
     const indicator = new THREE.Mesh(indicatorGeom, indicatorMat);
     indicator.position.set(0, 0.003, -0.026);
     this.handheldBezelRing.add(indicator);
@@ -1996,7 +2016,7 @@ class WebteeringApp {
 
     // North Pointer (Red Cone)
     const needleNorthGeom = new THREE.ConeGeometry(0.005, 0.032, 4);
-    const needleNorthMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
+    const needleNorthMat = new THREE.MeshBasicMaterial({ color: 0xff3333, toneMapped: false });
     const needleNorth = new THREE.Mesh(needleNorthGeom, needleNorthMat);
     needleNorth.position.z = -0.016;
     needleNorth.rotation.x = Math.PI / 2;
@@ -2004,7 +2024,7 @@ class WebteeringApp {
 
     // South Pointer (White Cone)
     const needleSouthGeom = new THREE.ConeGeometry(0.005, 0.032, 4);
-    const needleSouthMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const needleSouthMat = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false });
     const needleSouth = new THREE.Mesh(needleSouthGeom, needleSouthMat);
     needleSouth.position.z = 0.016;
     needleSouth.rotation.x = -Math.PI / 2;

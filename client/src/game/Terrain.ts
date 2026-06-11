@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createDetailAlbedo } from './textures/ProceduralTextures';
 import { VoxelType } from '../sharedTypes';
 
 // Simple deterministic PRNG
@@ -107,6 +108,65 @@ export class Terrain {
     }
   };
 
+  // Natural ground colors for the rendered 3D world. The saturated IOF palette
+  // above stays exclusive to the HUD/handheld map — painting it on the ground
+  // (white forest floor, pure-yellow fields) destroys depth perception.
+  private naturalColors: { [biome: string]: { [key in VoxelType]: string } } = {
+    alpine: {
+      field: '#8a9a52',   // alpine meadow, straw-green
+      forest: '#56673f',  // needle-litter forest floor
+      walk: '#4c5d38',    // mossy slow forest
+      thicket: '#3a4c2e', // dense dark undergrowth
+      water: '#1a6f9e',   // natural lake bed blue
+      cliff: '#7a7a72',   // grey rock
+      path: '#9b8052'     // packed dirt
+    },
+    dunes: {
+      field: '#d8c690',   // dry dune grass over sand
+      forest: '#b5ab7c',  // coastal scrub floor
+      walk: '#a3b18a',    // sea grass
+      thicket: '#5a7f63', // shoreline bushes
+      water: '#1273a8',
+      cliff: '#b07840',   // weathered sandstone
+      path: '#dcc9a0'     // wet sand track
+    },
+    gullies: {
+      field: '#c2a37a',   // desert scrub
+      forest: '#b09a76',  // dry loam
+      walk: '#a99e84',    // sparse brush
+      thicket: '#56644f', // thorny cluster
+      water: '#3f99b5',
+      cliff: '#8b4a3a',   // red canyon rock
+      path: '#c9af88'
+    },
+    sprint: {
+      field: '#5d9e63',   // lawn
+      forest: '#6fae7e',  // park grass
+      walk: '#4f8a5c',
+      thicket: '#2f5238',
+      water: '#2a9cc4',
+      cliff: '#9a948c',   // concrete
+      path: '#b08a5e'     // gravel walkway
+    }
+  };
+
+  // Natural in-world color for a terrain type (with shoreline polish), used by
+  // terrain vertex coloring and foliage tinting
+  public getNaturalColorHex(type: VoxelType, height?: number): string {
+    const palette = this.naturalColors[this.biome] || this.naturalColors['alpine'];
+    const base = palette[type] || '#56673f';
+
+    if (type !== 'water' && height !== undefined) {
+      if (this.biome === 'alpine' && height <= this.waterLevel + 0.8) {
+        return '#cdb286'; // sandy lakeshore
+      }
+      if (this.biome === 'dunes' && height <= this.waterLevel + 1.2) {
+        return '#e8dcc0'; // coastal beach
+      }
+    }
+    return base;
+  }
+
   private materials: { [key: string]: THREE.Material } = {};
   private chunkGroup = new THREE.Group();
   private waterMesh: THREE.Mesh | null = null;
@@ -128,10 +188,61 @@ export class Terrain {
 
   private initMaterials() {
     // Lambert material supporting soft shading and lighting with smooth normals
-    this.materials['terrain'] = new THREE.MeshLambertMaterial({
+    const terrainMat = new THREE.MeshLambertMaterial({
       vertexColors: true,
       shadowSide: THREE.DoubleSide
     });
+
+    // Procedural detail texturing: mid-grey luminance noise multiplied over the
+    // vertex colors so the IOF map hues (yellow open, white forest) stay exact.
+    // Slope selects between grass streaks and cracked rock.
+    const detailGrass = createDetailAlbedo('grass');
+    const detailRock = createDetailAlbedo('rock');
+    terrainMat.onBeforeCompile = (shader) => {
+      shader.uniforms.uDetailGrass = { value: detailGrass };
+      shader.uniforms.uDetailRock = { value: detailRock };
+
+      shader.vertexShader = `
+        varying vec3 vDetailWorldPos;
+        varying vec3 vDetailWorldNormal;
+      ` + shader.vertexShader;
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `
+          #include <begin_vertex>
+          vDetailWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          vDetailWorldNormal = normalize(mat3(modelMatrix) * normal);
+        `
+      );
+
+      shader.fragmentShader = `
+        uniform sampler2D uDetailGrass;
+        uniform sampler2D uDetailRock;
+        varying vec3 vDetailWorldPos;
+        varying vec3 vDetailWorldNormal;
+      ` + shader.fragmentShader;
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <color_fragment>',
+        `
+          #include <color_fragment>
+          {
+            vec2 uvTop = vDetailWorldPos.xz * 0.35;
+            vec3 grassDetail = texture2D(uDetailGrass, uvTop).rgb;
+            vec3 rockDetail = texture2D(uDetailRock, uvTop * 0.6).rgb;
+            // Steep faces are exactly the rock zones, so a top projection suffices
+            float rockW = smoothstep(0.55, 0.8, 1.0 - vDetailWorldNormal.y);
+            vec3 detail = mix(grassDetail, rockDetail, rockW);
+            // Second, much lower-frequency sample breaks visible tiling.
+            // Clamped so white IOF ground can't get pushed past 1 and blow out.
+            float macro = texture2D(uDetailGrass, uvTop * 0.043).g;
+            diffuseColor.rgb *= min(detail * 2.0 * (0.85 + macro * 0.3), vec3(1.12));
+          }
+        `
+      );
+      terrainMat.userData.shader = shader;
+    };
+
+    this.materials['terrain'] = terrainMat;
 
     // Stunning glassmorphic translucent water plane with custom depth and shoreline foam fading shaders
     this.materials['water'] = new THREE.MeshStandardMaterial({
@@ -420,7 +531,7 @@ export class Terrain {
     // Initialize analytical depth attributes and base colors
     const waterDepthAttr: number[] = [];
     const waterColors: number[] = [];
-    const waterBaseColorHex = this.biomeColors[this.biome]?.water || '#00a0f0';
+    const waterBaseColorHex = this.naturalColors[this.biome]?.water || '#1a6f9e';
     const waterBaseColor = new THREE.Color(waterBaseColorHex);
     const waterPosAttr = waterGeom.getAttribute('position') as THREE.BufferAttribute;
     
@@ -473,7 +584,23 @@ export class Terrain {
 
     // Move single water plane sheet to center on player chunk to optimize geometry draws
     if (this.waterMesh) {
-      this.waterMesh.position.set(pChunkX * this.chunkSize, this.waterLevel - 0.05, pChunkZ * this.chunkSize);
+      const wxOffset = pChunkX * this.chunkSize;
+      const wzOffset = pChunkZ * this.chunkSize;
+      const moved =
+        this.waterMesh.position.x !== wxOffset || this.waterMesh.position.z !== wzOffset;
+      this.waterMesh.position.set(wxOffset, this.waterLevel - 0.05, wzOffset);
+
+      // aDepth is baked against world heights, so it goes stale when the sheet
+      // re-centers — rebake so shoreline foam hugs the actual shore everywhere
+      if (moved) {
+        const posAttr = this.waterMesh.geometry.getAttribute('position') as THREE.BufferAttribute;
+        const depthAttr = this.waterMesh.geometry.getAttribute('aDepth') as THREE.BufferAttribute;
+        for (let i = 0; i < posAttr.count; i++) {
+          const hUnder = this.getTerrainHeight(wxOffset + posAttr.getX(i), wzOffset + posAttr.getZ(i));
+          depthAttr.setX(i, Math.max(0, this.waterLevel - hUnder));
+        }
+        depthAttr.needsUpdate = true;
+      }
     }
   }
 
@@ -486,6 +613,8 @@ export class Terrain {
 
     const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
     const colors: number[] = [];
+    const normals: number[] = [];
+    const normalVec = new THREE.Vector3();
 
     for (let i = 0; i < posAttr.count; i++) {
       const lx = posAttr.getX(i);
@@ -505,8 +634,14 @@ export class Terrain {
       const hF = this.getTerrainHeight(wx, wz + 0.5);
       const slope = Math.sqrt((hR - hL) * (hR - hL) + (hF - hB) * (hF - hB));
 
+      // World-space surface normal from the same central differences
+      normalVec.set(hL - hR, 1.0, hB - hF).normalize();
+      normals.push(normalVec.x, normalVec.y, normalVec.z);
+
       const type = this.getTerrainType(wx, wz);
-      let hex = this.getVoxelColorHex(type, h);
+      // The 3D world renders NATURAL ground colors; the IOF palette lives on
+      // the HUD/handheld map only (real orienteering: natural terrain, IOF map)
+      let hex = this.getNaturalColorHex(type, h);
 
       const color = new THREE.Color(hex);
 
@@ -522,9 +657,18 @@ export class Terrain {
         }
       }
 
-      // Beautiful Voxel-Paper procedural micro-texturing noise
+      // High ridge override (slope-independent): the flat-topped boundary wall
+      // (h=25 outside the map) must read as a distant white-grey ridge, not a
+      // saturated IOF-colored band floating at the horizon
+      if (h > 18) {
+        const ridgeFactor = Math.min(1.0, (h - 18) / 6);
+        color.lerp(new THREE.Color('#7a7a7a'), ridgeFactor * 0.85);
+        color.lerp(new THREE.Color('#f0f0f0'), ridgeFactor * 0.8);
+      }
+
+      // Subtle vertex tone variation (shader detail texturing supplies the fine grain)
       const noiseVal = this.noiseGen.noise(wx * 0.7, wz * 0.7);
-      const texNoise = (noiseVal - 0.5) * 0.12;
+      const texNoise = (noiseVal - 0.5) * 0.05;
       color.r = Math.max(0, Math.min(1, color.r + texNoise));
       color.g = Math.max(0, Math.min(1, color.g + texNoise));
       color.b = Math.max(0, Math.min(1, color.b + texNoise));
@@ -534,10 +678,18 @@ export class Terrain {
 
     geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     geometry.rotateX(-Math.PI / 2);
-    
-    // Offset chunk geometry translation to place it in the correct world grid location
-    geometry.translate(startX + size / 2, 0, startZ - size / 2);
-    geometry.computeVertexNormals();
+
+    // PlaneGeometry is center-origin (lx, ly span [-size/2, +size/2]) and heights
+    // were sampled at (startX + lx, startZ - ly), so translating by exactly
+    // (startX, startZ) puts every rendered vertex at its sampled world position.
+    // (A half-chunk offset here displaced the whole visible terrain from the
+    // logical height field, making players/foliage/animals float on slopes.)
+    geometry.translate(startX, 0, startZ);
+
+    // Analytic normals from the height field (central differences computed in
+    // the vertex loop). Identical math on both sides of every chunk border, so
+    // lighting is seamless across chunks — computeVertexNormals() isn't.
+    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
 
     const chunkMesh = new THREE.Mesh(geometry, this.materials['terrain']);
     chunkMesh.castShadow = true;
@@ -557,7 +709,7 @@ export class Terrain {
       const posAttr = this.waterMesh.geometry.getAttribute('position') as THREE.BufferAttribute;
       const colorAttr = this.waterMesh.geometry.getAttribute('color') as THREE.BufferAttribute;
       
-      const waterBaseColorHex = this.biomeColors[this.biome]?.water || '#00a0f0';
+      const waterBaseColorHex = this.naturalColors[this.biome]?.water || '#1a6f9e';
       const waterBaseColor = new THREE.Color(waterBaseColorHex);
 
       // Get water sheet offset coordinates in world
