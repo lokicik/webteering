@@ -39,6 +39,11 @@ export class Engine {
     this.terrain = terrain;
   }
 
+  public setFOV(fov: number) {
+    this.camera.fov = fov;
+    this.camera.updateProjectionMatrix();
+  }
+
   // Shadow frustum follows the player; snapped to shadow-map texels to avoid shimmer
   private readonly shadowCamHalfSize = 80;
   private currentLightDir = new THREE.Vector3(0.5, 0.8, 0.3).normalize();

@@ -5,6 +5,7 @@ export interface CollidableTerrain {
   getTerrainHeight(x: number, z: number): number;
   getTerrainType(x: number, z: number): string;
   getWaterLevel(): number;
+  getMapSize(): number;
 }
 
 export class Controls {
@@ -46,6 +47,13 @@ export class Controls {
   
   // Joystick parameters for Mobile
   private joystickVector = new THREE.Vector2(0, 0);
+  public touchMode = false;
+
+  // Menu pause: hard-gates all movement/look input while a modal is open
+  public paused = false;
+
+  // Look sensitivity (radians per pixel of mouse movement)
+  public mouseSensitivity = 0.0022;
 
   // Flight Mode
   public isFlightMode = false;
@@ -81,6 +89,9 @@ export class Controls {
 
   private initKeyboard() {
     window.addEventListener('keydown', (e) => {
+      // Paused gate must precede the lock check: flight mode accepts keys
+      // even while the pointer is unlocked
+      if (this.paused) return;
       if (!this.isLocked && !this.isFlightMode) return;
       
       if (e.code === 'KeyW' || e.code === 'ArrowUp') this.keys.KeyW = true;
@@ -115,6 +126,7 @@ export class Controls {
   private initMouse() {
     // Request pointer lock when clicking on canvas container
     this.domElement.addEventListener('click', () => {
+      if (this.touchMode) return;
       if (!this.isLocked && document.pointerLockElement !== this.domElement) {
         this.domElement.requestPointerLock();
       }
@@ -143,13 +155,17 @@ export class Controls {
       // Safeguard spike clamp (cursor wraps on lock change)
       if (Math.abs(e.movementX) > 120 || Math.abs(e.movementY) > 120) return;
 
-      const sensitivity = 0.0022;
-      this.rotation.y -= e.movementX * sensitivity;
-      this.rotation.x -= e.movementY * sensitivity;
-
-      // Limit look up/down to prevent rolling camera (90 degrees limit)
-      this.rotation.x = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, this.rotation.x));
+      this.applyLookDelta(e.movementX * this.mouseSensitivity, e.movementY * this.mouseSensitivity);
     });
+  }
+
+  public applyLookDelta(dx: number, dy: number) {
+    if (this.paused) return;
+    this.rotation.y -= dx;
+    this.rotation.x -= dy;
+
+    // Limit look up/down to prevent rolling camera (90 degrees limit)
+    this.rotation.x = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, this.rotation.x));
   }
 
   public resetRotation(yaw: number, pitch: number) {
@@ -158,14 +174,31 @@ export class Controls {
   }
 
   public setJoystickVector(x: number, y: number) {
+    if (this.paused) return;
     this.joystickVector.set(x, y);
   }
 
+  public setPaused(paused: boolean) {
+    this.paused = paused;
+    if (paused) {
+      for (const key in this.keys) this.keys[key] = false;
+      this.joystickVector.set(0, 0);
+    }
+  }
+
   public lock() {
+    if (this.touchMode) {
+      this.isLocked = true;
+      return;
+    }
     this.domElement.requestPointerLock();
   }
 
   public unlock() {
+    if (this.touchMode) {
+      this.isLocked = false;
+      return;
+    }
     document.exitPointerLock();
   }
 
@@ -465,6 +498,16 @@ export class Controls {
       this.velocity.z = 0; // block Z speed
     } else {
       this.position.z = nextPosZ;
+    }
+
+    // 4b2. Hard map containment: the boundary is now a walkable ridge (the
+    // old sheer 25m wall blocked via the step check), so clamp explicitly
+    if (!this.isFlightMode) {
+      const bound = this.terrain.getMapSize() / 2 - 1.5;
+      if (this.position.x > bound) { this.position.x = bound; if (this.velocity.x > 0) this.velocity.x = 0; }
+      if (this.position.x < -bound) { this.position.x = -bound; if (this.velocity.x < 0) this.velocity.x = 0; }
+      if (this.position.z > bound) { this.position.z = bound; if (this.velocity.z > 0) this.velocity.z = 0; }
+      if (this.position.z < -bound) { this.position.z = -bound; if (this.velocity.z < 0) this.velocity.z = 0; }
     }
 
     // 4c. Slope & Elevation Snap (using the final combined position)
